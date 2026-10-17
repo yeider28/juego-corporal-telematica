@@ -6,6 +6,9 @@ import { createRunLedger, calculateRunRates, calculateBer } from './sistemas/met
 import { renderBootError } from './ui/boot-error.js'
 import { createGameConfig } from './escenas/game-config.js'
 import { createObjectPool } from './entidades/object-pool.js'
+import { createGlobalKeyBinding } from './sistemas/global-keys.js'
+import { audioControlsState } from './sistemas/audio-controls.js'
+import { completeTutorial, readTutorialSeen } from './sistemas/tutorial-state.js'
 
 const app = document.querySelector('#app')
 app.innerHTML = `
@@ -31,6 +34,7 @@ app.innerHTML = `
             <div class="loadout-actions"><button id="start-run" class="start-run">INICIAR PARTIDA <span>⏎</span></button><button id="loadout-back" class="loadout-back">VOLVER AL MENÚ</button></div>
           </section>
           <section class="tutorial-panel" id="tutorial-panel" hidden role="dialog" aria-modal="true"><span>PROTOCOLO DE ENTRENAMIENTO</span><h2>Antes de empezar</h2><p id="tutorial-message"></p><div><button id="tutorial-skip">SALTAR TUTORIAL</button><button id="tutorial-next">SIGUIENTE</button></div></section>
+          <div class="global-control-notice" id="global-control-notice" role="status" aria-live="polite" hidden></div>
           <section class="pause-panel" id="pause-panel" hidden role="dialog" aria-modal="true"><h2>PAUSA</h2><button data-pause-action="resume">REANUDAR</button><button data-pause-action="options">OPCIONES</button><button data-pause-action="calibrate">RECALIBRAR CÁMARA</button><button data-pause-action="menu">SALIR AL MENÚ</button></section>
           <section class="upgrade-panel" id="upgrade-panel" hidden aria-label="Elige una mejora"></section>
         </div>
@@ -39,14 +43,14 @@ app.innerHTML = `
       <aside class="side-panel">
         <div class="panel-heading"><span class="eyebrow">PROTOCOLO ARCADE / 01</span><h1>Controla el flujo.</h1><p>Detecta las tramas corruptas. Deja pasar las sanas.</p></div>
         <div class="rule-card"><div class="card-icon">⌁</div><div><strong>Tu misión</strong><p>Destruye solo los paquetes con un bit rojo antes de que alcancen el nodo.</p></div></div>
-        <details class="camera-section"><summary>CÁMARA · <span id="camera-summary-status">DESACTIVADA</span></summary>
+        <details class="camera-section"><summary>CÁMARA · <span id="camera-summary-status">DESACTIVADA</span> · <span id="camera-shake-status">TEMBLOR ON</span></summary>
         <button class="camera-button" id="camera-button"><span>◎</span> ACTIVAR CÁMARA <small>OPCIONAL</small></button>
         <div class="camera-state" id="camera-state" role="status" aria-live="polite">Cámara desactivada · Teclado, ratón y gamepad disponibles</div>
         <div class="camera-tools"><button id="recalibrate-camera" disabled>RECALIBRAR</button><button id="toggle-preview" aria-pressed="true">OCULTAR VISTA</button></div>
         <div class="camera-view" id="camera-view"><video id="camera-preview" autoplay playsinline muted></video><canvas id="pose-skeleton" aria-label="Esqueleto detectado por la cámara"></canvas><div id="camera-calibration" class="camera-calibration" hidden><div class="calibration-guide"><span>COLOCA CABEZA Y HOMBROS AQUÍ</span><b id="calibration-countdown">3</b></div></div><span id="gesture-state" class="gesture-state">GESTO: —</span></div>
         </details>
         <details class="method-section"><summary>MÉTODO ACTIVO · <span id="method-summary-status">PARIDAD</span></summary><div id="method-state">En partida, pulsa 1 o 2 para cambiar.</div></details>
-        <details class="accessibility-panel"><summary>ACCESIBILIDAD Y GESTOS</summary><label>Suavizado <select id="setting-smoothing"><option value="0.82">Rápido</option><option value="0.58" selected>Equilibrado</option><option value="0.34">Suave</option></select></label><label>Zona muerta <input id="setting-deadzone" type="range" min="0.005" max="0.04" step="0.001" value="0.012"><output id="deadzone-value">0.012</output></label><label>Umbral temporal <input id="setting-temporal" type="range" min="80" max="500" step="20" value="140"><output id="temporal-value">140 ms</output></label><label><input id="setting-reduced-motion" type="checkbox"> Reducir movimiento (sin shake ni flashes)</label><label>Paleta <select id="setting-palette"><option value="default">Cian / rojo (predeterminada)</option><option value="contrast">Alto contraste</option><option value="blue-yellow">Azul / amarillo</option></select></label><label>Tamaño de texto <input id="setting-text-size" type="range" min="90" max="125" step="5" value="100"><output id="text-size-value">100%</output></label><label>Volumen <input id="setting-volume" type="range" min="0" max="100" step="5" value="70"><output id="volume-value">70%</output></label><button id="mute-toggle" class="mute-toggle" aria-pressed="false">SILENCIAR (M)</button><small>El audio se habilita tras una interacción con la página, según la política de autoplay del navegador.</small><button id="settings-back" class="settings-back" hidden>VOLVER</button><small>Teclado y ratón siguen disponibles si la cámara se pierde o se deniega.</small></details>
+        <details class="accessibility-panel"><summary>ACCESIBILIDAD Y GESTOS</summary><small id="motion-preference-note" class="motion-preference-note" hidden>Tu sistema prefiere movimiento reducido. Se activó esta opción; puedes cambiarla aquí.</small><label>Suavizado <select id="setting-smoothing"><option value="0.82">Rápido</option><option value="0.58" selected>Equilibrado</option><option value="0.34">Suave</option></select></label><label>Zona muerta <input id="setting-deadzone" type="range" min="0.005" max="0.04" step="0.001" value="0.012"><output id="deadzone-value">0.012</output></label><label>Umbral temporal <input id="setting-temporal" type="range" min="80" max="500" step="20" value="140"><output id="temporal-value">140 ms</output></label><label><input id="setting-reduced-motion" type="checkbox"> Reducir movimiento (sin shake ni flashes)</label><label>Paleta <select id="setting-palette"><option value="default">Cian / rojo (predeterminada)</option><option value="contrast">Alto contraste</option><option value="blue-yellow">Azul / amarillo</option></select></label><label>Tamaño de texto <input id="setting-text-size" type="range" min="90" max="125" step="5" value="100"><output id="text-size-value">100%</output></label><label>Volumen <input id="setting-volume" type="range" min="0" max="100" step="5" value="70"><output id="volume-value">70%</output></label><button id="mute-toggle" class="mute-toggle" aria-pressed="false">SILENCIAR (M)</button><button id="replay-tutorial" class="mute-toggle">VER TUTORIAL DE NUEVO</button><small>El audio se habilita tras una interacción con la página, según la política de autoplay del navegador.</small><button id="settings-back" class="settings-back" hidden>VOLVER</button><small>Teclado y ratón siguen disponibles si la cámara se pierde o se deniega.</small></details>
         <section id="gesture-debug" class="gesture-debug" hidden aria-live="polite">
           <div class="debug-heading"><b>PRUEBA DE GESTOS</b><span>TECLA D PARA CERRAR</span></div>
           <div class="debug-readings"><span id="debug-pose">POSE: SIN DATOS</span><span id="debug-values">Hombros — · Apunte — · Giro muñeca —</span></div>
@@ -86,6 +90,10 @@ const tutorialPanel = document.querySelector('#tutorial-panel')
 const pausePanel = document.querySelector('#pause-panel')
 const resultsPanel = document.querySelector('#results-panel')
 const upgradePanel = document.querySelector('#upgrade-panel')
+const globalControlNotice = document.querySelector('#global-control-notice')
+const reducedMotionInput = document.querySelector('#setting-reduced-motion')
+const motionPreferenceNote = document.querySelector('#motion-preference-note')
+const REDUCED_MOTION_CHOICE_KEY = 'tramas-reduced-motion-choice'
 const tutorialMessage = document.querySelector('#tutorial-message')
 const tutorialSteps = ['Destruye las tramas con el bit rojo: son paquetes corruptos.', 'No dispares a las tramas sanas con ✓. Golpearlas rompe tu racha y resta puntos o vida.', 'Muévete con ←/→, apunta con A/F y dispara con ESPACIO. Ratón, gamepad y cámara también funcionan.', 'Combina Paridad y CRC para detectar errores; Hamming puede corregirlos. Mantén la precisión para aumentar la ráfaga.']
 let tutorialStep = 0
@@ -95,6 +103,19 @@ const loadoutSelection = { balls: ['parity', 'hamming'], perk: 'rapid', difficul
 const ACCESSIBILITY_KEY = 'tramas-accessibility-v1'
 const accessibility = { smoothing: 0.58, deadZone: 0.012, temporalMs: 140, reducedMotion: false, palette: 'default', textSize: 100, volume: 70, muted: false }
 try { Object.assign(accessibility, JSON.parse(localStorage.getItem(ACCESSIBILITY_KEY) || '{}')) } catch {}
+let reducedMotionWasDetected = false
+try {
+  if (localStorage.getItem(REDUCED_MOTION_CHOICE_KEY) !== 'user' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    accessibility.reducedMotion = true
+    reducedMotionWasDetected = true
+  }
+} catch {}
+function showControlNotice(message) {
+  globalControlNotice.textContent = message
+  globalControlNotice.hidden = false
+  clearTimeout(showControlNotice.timer)
+  showControlNotice.timer = setTimeout(() => { globalControlNotice.hidden = true }, 2600)
+}
 function applyAccessibility() {
   document.documentElement.style.setProperty('--text-scale', `${accessibility.textSize / 100}`)
   document.documentElement.dataset.palette = accessibility.palette
@@ -104,15 +125,19 @@ function applyAccessibility() {
   document.querySelector('#deadzone-value').value = Number(accessibility.deadZone).toFixed(3)
   document.querySelector('#temporal-value').value = `${accessibility.temporalMs} ms`
   document.querySelector('#text-size-value').value = `${accessibility.textSize}%`
-  document.querySelector('#volume-value').value = `${accessibility.volume}%`
+  const audioControls = audioControlsState(accessibility.muted, accessibility.volume)
+  const volumeSlider = document.querySelector('#setting-volume')
+  if (volumeSlider) { volumeSlider.value = String(audioControls.effectiveVolume); volumeSlider.disabled = accessibility.muted; volumeSlider.setAttribute('aria-valuetext', audioControls.volumeDescription) }
+  document.querySelector('#volume-value').value = audioControls.volumeText
   if (window.gameInstance?.sound) window.gameInstance.sound.volume = accessibility.volume / 100
   if (window.gameInstance?.sound) window.gameInstance.sound.mute = accessibility.muted
   const muteButton = document.querySelector('#mute-toggle')
-  if (muteButton) { muteButton.textContent = accessibility.muted ? 'ACTIVAR SONIDO (M)' : 'SILENCIAR (M)'; muteButton.setAttribute('aria-pressed', String(accessibility.muted)) }
+  if (muteButton) { muteButton.textContent = audioControls.button; muteButton.setAttribute('aria-pressed', String(audioControls.buttonPressed)) }
   const audioStatus = document.querySelector('#audio-status')
-  if (audioStatus) audioStatus.textContent = accessibility.muted ? '· AUDIO: MUTE' : '· AUDIO: ON'
+  if (audioStatus) audioStatus.textContent = audioControls.header
+  if (motionPreferenceNote) motionPreferenceNote.hidden = !reducedMotionWasDetected
   const scene = window.gameInstance?.scene?.getScene?.('flow')
-  if (scene) { scene.reducedMotion = accessibility.reducedMotion; scene.syncFallbackAudioVolume?.(); scene.updateAudioStatus?.() }
+  if (scene) { scene.setReducedMotion?.(accessibility.reducedMotion); scene.syncFallbackAudioVolume?.(); scene.updateAudioStatus?.() }
 }
 function saveAccessibility() { try { localStorage.setItem(ACCESSIBILITY_KEY, JSON.stringify(accessibility)) } catch {}; applyAccessibility() }
 function resumeAudioFromUserGesture() {
@@ -126,13 +151,18 @@ function resumeAudioFromUserGesture() {
 for (const [id, key, parse] of [
   ['setting-smoothing', 'smoothing', Number], ['setting-deadzone', 'deadZone', Number], ['setting-temporal', 'temporalMs', Number], ['setting-palette', 'palette', String], ['setting-text-size', 'textSize', Number], ['setting-volume', 'volume', Number],
 ]) document.querySelector(`#${id}`).addEventListener('input', (event) => { accessibility[key] = parse(event.target.value); saveAccessibility(); if (window.poseControl?.translator) window.poseControl.translator.configure({ smoothingAlpha: accessibility.smoothing, moveDeadZone: accessibility.deadZone }) })
-document.querySelector('#setting-reduced-motion').addEventListener('change', (event) => { accessibility.reducedMotion = event.target.checked; saveAccessibility() })
+reducedMotionInput.addEventListener('change', (event) => { accessibility.reducedMotion = event.target.checked; reducedMotionWasDetected = false; try { localStorage.setItem(REDUCED_MOTION_CHOICE_KEY, 'user') } catch {}; saveAccessibility() })
 togglePreviewButton.addEventListener('click', () => { cameraView.classList.toggle('preview-hidden'); const visible = !cameraView.classList.contains('preview-hidden'); togglePreviewButton.textContent = visible ? 'OCULTAR VISTA' : 'MOSTRAR VISTA'; togglePreviewButton.setAttribute('aria-pressed', String(visible)) })
 document.querySelector('#mute-toggle').addEventListener('click', () => {
   resumeAudioFromUserGesture()
   const scene = window.gameInstance?.scene?.getScene?.('flow')
   if (scene?.toggleAudioMute) scene.toggleAudioMute()
   else { accessibility.muted = !accessibility.muted; saveAccessibility() }
+})
+document.querySelector('#replay-tutorial').addEventListener('click', () => {
+  document.querySelector('.accessibility-panel').open = false
+  document.querySelector('#settings-back').hidden = true
+  window.gameInstance?.scene?.getScene('flow')?.openTutorialPreview(returnFromOptions === 'pause' ? 'pause-options' : 'options')
 })
 document.querySelector('#settings-back').addEventListener('click', () => { document.querySelector('.accessibility-panel').open = false; document.querySelector('#settings-back').hidden = true; if (returnFromOptions === 'pause') pausePanel.hidden = false; else mainMenu.hidden = false })
 document.querySelector('#loadout-back').addEventListener('click', () => { loadoutPanel.classList.add('is-hidden'); mainMenu.hidden = false; document.querySelector('.shell').classList.remove('in-run') })
@@ -141,7 +171,7 @@ document.querySelectorAll('[data-menu-action]').forEach((button) => button.addEv
   if (action === 'play') { mainMenu.hidden = true; loadoutPanel.classList.remove('is-hidden'); document.querySelector('.shell').classList.add('in-run'); return }
   if (action === 'options') { returnFromOptions = 'menu'; mainMenu.hidden = true; const panel = document.querySelector('.accessibility-panel'); panel.open = true; document.querySelector('#settings-back').hidden = false; panel.scrollIntoView({ behavior: accessibility.reducedMotion ? 'auto' : 'smooth', block: 'center' }); return }
   menuSubpanel.hidden = false
-  if (action === 'how') menuSubpanel.innerHTML = `<h3>CÓMO JUGAR</h3><p>Destruye solo las tramas corruptas con bit rojo. Evita las sanas y esquiva el jefe. Mantén la precisión para subir tu ráfaga.</p><p>←/→ mover · A/F apuntar · ESPACIO disparar · 1/2 cambiar método · ESC pausa · M silencio.</p><button data-menu-back>VOLVER</button>`
+  if (action === 'how') { menuSubpanel.hidden = true; window.gameInstance?.scene?.getScene('flow')?.openTutorialPreview('menu'); return }
   if (action === 'scores') { menuSubpanel.innerHTML = `<h3>MEJORES PUNTAJES</h3>${renderLeaderboard()}<button data-menu-back>VOLVER</button>` }
   menuSubpanel.querySelector('[data-menu-back]')?.addEventListener('click', () => { menuSubpanel.hidden = true; menuSubpanel.innerHTML = '' })
 }))
@@ -165,7 +195,7 @@ function renderLeaderboard(limit = 8) {
   return `<table><thead><tr><th>#</th><th>INI</th><th>PUNTOS</th><th>OLEADA</th></tr></thead><tbody>${scores.slice().sort((a, b) => b.score - a.score).slice(0, limit).map((entry, i) => `<tr><td>${i + 1}</td><td>${String(entry.initials || '---').replace(/[^A-Z0-9-]/gi, '').slice(0, 3)}</td><td>${Number(entry.score) || 0}</td><td>${Number(entry.wave) || 1}</td></tr>`).join('')}</tbody></table>`
 }
 document.querySelector('#tutorial-next').addEventListener('click', () => window.gameInstance?.scene?.getScene('flow')?.advanceTutorial())
-document.querySelector('#tutorial-skip').addEventListener('click', () => window.gameInstance?.scene?.getScene('flow')?.finishTutorial())
+document.querySelector('#tutorial-skip').addEventListener('click', () => window.gameInstance?.scene?.getScene('flow')?.finishTutorial('skip'))
 pausePanel.querySelectorAll('[data-pause-action]').forEach((button) => button.addEventListener('click', () => {
   const scene = window.gameInstance?.scene?.getScene('flow')
   if (button.dataset.pauseAction === 'resume') scene?.resume()
@@ -317,6 +347,22 @@ if (!window.Phaser) {
       const COLORS = { cyan: 0x18e6e1, red: 0xff416d, blue: 0x6979ff, gold: 0xffcb57, green: 0x6bff9f, white: 0xeaf8ff, muted: 0x78909f, bg: 0x08121f, panel: 0x0d1b2b }
   const TYPE = { parity: { name: 'PARIDAD', color: COLORS.cyan }, crc: { name: 'CRC', color: COLORS.blue }, hamming: { name: 'HAMMING', color: COLORS.gold } }
   let currentScene
+  const globalKeys = createGlobalKeyBinding(window, {
+    toggleMute: () => { resumeAudioFromUserGesture(); if (currentScene?.toggleAudioMute) currentScene.toggleAudioMute(); else { accessibility.muted = !accessibility.muted; saveAccessibility() } },
+    toggleShake: () => currentScene?.toggleScreenShake(),
+    isReducedMotion: () => accessibility.reducedMotion,
+    onMotionBlocked: () => showControlNotice('Temblor bloqueado por Reducir movimiento'),
+    toggleDebug: toggleGestureDebug,
+    escape: () => {
+      if (currentScene?.mode === 'tutorial') { currentScene.finishTutorial('skip'); return }
+      if (!document.querySelector('#settings-back').hidden) { document.querySelector('#settings-back').click(); return }
+      if (!loadoutPanel.classList.contains('is-hidden')) { document.querySelector('#loadout-back').click(); return }
+      if (currentScene?.mode === 'playing') currentScene.pause()
+      else if (currentScene?.mode === 'paused') currentScene.resume()
+      else if (currentScene?.mode === 'results') currentScene.returnToMenu()
+      else if (!menuSubpanel.hidden) { menuSubpanel.hidden = true; menuSubpanel.innerHTML = '' }
+    },
+  })
   window.addEventListener('start-game-run', () => currentScene?.startRun())
 
   class FlowScene extends Phaser.Scene {
@@ -395,7 +441,7 @@ if (!window.Phaser) {
       this.waveTotal = 0
       this.boss = null
       this.lastTime = 0
-      this.keys = this.input.keyboard.addKeys('LEFT,RIGHT,A,F,SPACE,ONE,TWO,THREE,ENTER,ESC,UP,DOWN,V')
+      this.keys = this.input.keyboard.addKeys('LEFT,RIGHT,A,F,SPACE,ONE,TWO,THREE,ENTER,UP,DOWN')
       this.pointerFire = false
       this.input.on('pointerdown', (p) => { if (this.mode === 'title') this.startRun(); else if (this.mode === 'playing') this.fire() })
       this.input.on('pointermove', (pointer) => { if (this.mode === 'playing' && !window.poseControl?.active && (pointer.isDown || pointer.wasMoved)) this.aim = Phaser.Math.Clamp(Math.atan2(pointer.worldY - this.player.y, pointer.worldX - this.player.x), -Math.PI + 0.2, -0.2) })
@@ -403,13 +449,22 @@ if (!window.Phaser) {
       this.startBackgroundMusic()
       this.createOptionalAnimations()
       this.renderTitle()
-      this.events.once('shutdown', () => { currentScene = null })
+      globalKeys.register()
+      this.updateShakeIndicator()
+      this.events.once('shutdown', () => { globalKeys.unregister(); if (currentScene === this) currentScene = null })
     }
 
     updateAudioStatus() {
-      this.audioStatusText?.setText(this.sound.mute ? 'AUDIO: MUTE' : 'AUDIO: ON')
+      const state = audioControlsState(this.sound.mute, accessibility.volume)
+      this.audioStatusText?.setText(state.header.replace(/^· /, ''))
       const status = document.querySelector('#audio-status')
-      if (status) status.textContent = this.sound.mute ? '· AUDIO: MUTE' : '· AUDIO: ON'
+      if (status) status.textContent = state.header
+      const button = document.querySelector('#mute-toggle')
+      if (button) { button.textContent = state.button; button.setAttribute('aria-pressed', String(state.buttonPressed)) }
+      const slider = document.querySelector('#setting-volume')
+      if (slider) { slider.value = String(state.effectiveVolume); slider.disabled = this.sound.mute; slider.setAttribute('aria-valuetext', state.volumeDescription) }
+      const output = document.querySelector('#volume-value')
+      if (output) output.value = state.volumeText
     }
 
     toggleAudioMute() {
@@ -418,6 +473,34 @@ if (!window.Phaser) {
       saveAccessibility()
       this.syncFallbackAudioVolume()
       this.updateAudioStatus()
+    }
+
+    updateShakeIndicator() {
+      const indicator = document.querySelector('#camera-shake-status')
+      if (indicator) indicator.textContent = accessibility.reducedMotion ? 'TEMBLOR BLOQUEADO' : `TEMBLOR ${this.screenShakeEnabled ? 'ON' : 'OFF'}`
+    }
+
+    toggleScreenShake() {
+      if (accessibility.reducedMotion) { showControlNotice('Temblor bloqueado por Reducir movimiento'); return }
+      this.screenShakeEnabled = !this.screenShakeEnabled
+      try { localStorage.setItem('tramas-screen-shake', String(this.screenShakeEnabled)) } catch {}
+      this.updateShakeIndicator()
+      showControlNotice(`Temblor ${this.screenShakeEnabled ? 'activado' : 'desactivado'} · V para cambiar`)
+    }
+
+    setReducedMotion(enabled) {
+      this.reducedMotion = Boolean(enabled)
+      if (this.reducedMotion) {
+        this.cameras?.main?.resetFX?.()
+        if (this.cameras?.main) this.cameras.main.setZoom(1)
+        this.tweens?.killTweensOf?.([this.cameras?.main, this.titlePrompt, this.actorGlow, this.damageFrame, this.damageVignette, ...(this.blocks || []).flatMap((block) => [block.container, block.label, ...(block.bits || [])]), ...(this.shots || []).map((shot) => shot.aura)].filter(Boolean))
+        this.damageFrame?.setAlpha(0)
+        this.damageVignette?.setAlpha(0)
+        this.actor?.setAlpha(1)
+        for (const block of this.blocks || []) { block.container?.setAlpha(1); block.bits?.forEach((bit) => bit.setAlpha(1)) }
+        for (const shot of this.shots || []) shot.aura?.setAlpha(1)
+      }
+      this.updateShakeIndicator?.()
     }
 
     resumeAudio() {
@@ -695,14 +778,33 @@ if (!window.Phaser) {
       this.bossWarning = this.text(W / 2, 135, '', 12, '#ff416d', { originX: 0.5, fontStyle: 'bold' }).setVisible(false)
       this.bossHud.add([bossTitle, bossBarBg, this.bossBar, this.bossPhaseText, this.bossWarning])
       this.bossAttackGraphics = this.add.graphics().setDepth(6)
-      this.wave = 1; this.beginWave()
       this.mode = 'playing'
-      if (localStorage.getItem('tramas-tutorial-complete') !== 'true') this.startTutorial()
+      this.wave = 1
+      if (!readTutorialSeen(localStorage)) this.startTutorial({ startsWave: true })
+      else this.beginWave()
     }
 
-    startTutorial() { tutorialStep = 0; tutorialMessage.textContent = tutorialSteps[tutorialStep]; tutorialPanel.hidden = false; this.mode = 'tutorial' }
+    startTutorial({ startsWave = false, returnTo = null } = {}) { tutorialStep = 0; this.tutorialStartsWave = startsWave; this.tutorialReturnTo = returnTo; tutorialMessage.textContent = tutorialSteps[tutorialStep]; document.querySelector('#tutorial-next').textContent = 'SIGUIENTE'; tutorialPanel.hidden = false; this.mode = 'tutorial' }
+    openTutorialPreview(returnTo = 'menu') {
+      if (this.mode === 'playing') this.pause()
+      if (returnTo === 'menu') mainMenu.hidden = true
+      if (returnTo === 'options') { mainMenu.hidden = true; document.querySelector('.accessibility-panel').open = false }
+      if (returnTo === 'pause-options') pausePanel.hidden = true
+      this.startTutorial({ startsWave: false, returnTo })
+    }
     advanceTutorial() { if (this.mode !== 'tutorial') return; tutorialStep++; if (tutorialStep >= tutorialSteps.length) this.finishTutorial(); else tutorialMessage.textContent = tutorialSteps[tutorialStep]; document.querySelector('#tutorial-next').textContent = tutorialStep === tutorialSteps.length - 1 ? 'EMPEZAR' : 'SIGUIENTE' }
-    finishTutorial() { tutorialPanel.hidden = true; localStorage.setItem('tramas-tutorial-complete', 'true'); this.mode = 'playing' }
+    finishTutorial(action = 'complete') {
+      if (this.mode !== 'tutorial') return
+      completeTutorial(localStorage, action)
+      tutorialPanel.hidden = true
+      const startsWave = this.tutorialStartsWave
+      const returnTo = this.tutorialReturnTo
+      this.tutorialStartsWave = false; this.tutorialReturnTo = null
+      if (startsWave) { this.mode = 'playing'; this.beginWave(); return }
+      if (returnTo === 'menu') { this.mode = 'title'; mainMenu.hidden = false }
+      else if (returnTo === 'pause-options') { this.mode = 'paused'; pausePanel.hidden = false }
+      else { this.mode = 'title'; mainMenu.hidden = false; document.querySelector('.accessibility-panel').open = true }
+    }
 
     beginWave() {
       this.ledger.beginWave(this.wave)
@@ -1144,7 +1246,7 @@ if (!window.Phaser) {
       if (this.transitioning) return
       if (this.mode === 'title') { if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) || Phaser.Input.Keyboard.JustDown(this.keys.ENTER)) this.startRun(); return }
       if (this.mode === 'tutorial') { if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) || Phaser.Input.Keyboard.JustDown(this.keys.ENTER)) this.advanceTutorial(); return }
-      if (this.mode === 'paused') { if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) this.resume(); return }
+      if (this.mode === 'paused') return
       if (this.mode === 'upgrade' || this.mode === 'results') {
         if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.mode === 'upgrade' ? this.chooseUpgrade(0) : this.startRun()
         if (Phaser.Input.Keyboard.JustDown(this.keys.TWO) && this.mode === 'upgrade') this.chooseUpgrade(1)
@@ -1153,16 +1255,10 @@ if (!window.Phaser) {
         return
       }
       if (this.mode !== 'playing') return
-      if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
-        this.screenShakeEnabled = !this.screenShakeEnabled
-        localStorage.setItem('tramas-screen-shake', String(this.screenShakeEnabled))
-        cameraState.textContent = `Temblor ${this.screenShakeEnabled ? 'activado' : 'desactivado'} · V para cambiar`
-      }
       if (this.hitStopMs > 0) {
         this.hitStopMs = Math.max(0, this.hitStopMs - delta)
         return
       }
-      if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) { this.pause(); return }
       this.fireCooldown = Math.max(0, this.fireCooldown - dt)
       this.shotHeat = Math.max(0, this.shotHeat - BALANCE.combat.spamHeatDecayPerSecond * dt)
       this.invulnMs = Math.max(0, this.invulnMs - delta)
@@ -1556,14 +1652,5 @@ if (!window.Phaser) {
   recalibrateButton.addEventListener('click', () => window.poseControl?.calibrate?.())
 
   window.addEventListener('pointerdown', resumeAudioFromUserGesture, { capture: true })
-  window.addEventListener('keydown', (event) => {
-    resumeAudioFromUserGesture()
-    if (event.code === 'KeyM' && !event.repeat && !['INPUT', 'TEXTAREA'].includes(event.target?.tagName)) {
-      if (currentScene?.toggleAudioMute) currentScene.toggleAudioMute()
-      else { accessibility.muted = !accessibility.muted; saveAccessibility() }
-    }
-    if (event.code === 'KeyD' && !event.repeat) { toggleGestureDebug(); return }
-    if (['ArrowLeft', 'ArrowRight', ' '].includes(event.key)) event.preventDefault()
-  })
   window.addEventListener('beforeunload', () => { window.poseControl?.stop(); game.destroy(true) })
 }
