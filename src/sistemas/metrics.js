@@ -36,10 +36,19 @@ export function calculateRunRates({ corrected, bitErrors, totalBits }) {
   }
 }
 
-export function calculateBer({ bitErrors, framesGenerated, bitsPerFrame = 8 }) {
+export function calculateBer({ bitErrors, residualBitErrors = 0, framesGenerated, bitsPerFrame = 8 }) {
   const frames = Math.max(0, Math.floor(Number(framesGenerated) || 0))
   const bitsPerFrameSafe = Math.max(1, Math.floor(Number(bitsPerFrame) || 8))
   const totalBits = frames * bitsPerFrameSafe
   const errors = Math.max(0, Math.min(totalBits, Math.floor(Number(bitErrors) || 0)))
-  return { framesGenerated: frames, bitsPerFrame: bitsPerFrameSafe, bitErrors: errors, totalBits, ber: totalBits ? Number((errors / totalBits * 100).toFixed(2)) : 0 }
+  const residualErrors = Math.max(0, Math.min(errors, Math.floor(Number(residualBitErrors) || 0)))
+  return {
+    framesGenerated: frames,
+    bitsPerFrame: bitsPerFrameSafe,
+    bitErrors: errors,
+    residualBitErrors: residualErrors,
+    totalBits,
+    ber: totalBits ? Number((errors / totalBits * 100).toFixed(2)) : 0,
+    residualBer: totalBits ? Number((residualErrors / totalBits * 100).toFixed(2)) : 0,
+  }
 }

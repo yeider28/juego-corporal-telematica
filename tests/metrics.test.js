@@ -34,6 +34,6 @@ test('las tasas muestran la fórmula de corrección y BER con los contadores del
 })
 
 test('BER usa exactamente ocho bits por cada trama generada', () => {
-  assert.deepEqual(calculateBer({ bitErrors: 3, framesGenerated: 6 }), { framesGenerated: 6, bitsPerFrame: 8, bitErrors: 3, totalBits: 48, ber: 6.25 })
-  assert.deepEqual(calculateBer({ bitErrors: 1, framesGenerated: 3 }), { framesGenerated: 3, bitsPerFrame: 8, bitErrors: 1, totalBits: 24, ber: 4.17 })
+  assert.deepEqual(calculateBer({ bitErrors: 3, residualBitErrors: 1, framesGenerated: 6 }), { framesGenerated: 6, bitsPerFrame: 8, bitErrors: 3, residualBitErrors: 1, totalBits: 48, ber: 6.25, residualBer: 2.08 })
+  assert.deepEqual(calculateBer({ bitErrors: 1, framesGenerated: 3 }), { framesGenerated: 3, bitsPerFrame: 8, bitErrors: 1, residualBitErrors: 0, totalBits: 24, ber: 4.17, residualBer: 0 })
 })
