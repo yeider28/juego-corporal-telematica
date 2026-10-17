@@ -13,15 +13,23 @@ const isVisible = (landmark, threshold) => Boolean(
 )
 
 export class GestureTranslator {
-  constructor(thresholds = DEFAULT_GESTURE_THRESHOLDS) {
+  constructor(thresholds = DEFAULT_GESTURE_THRESHOLDS, options = {}) {
     this.thresholds = { ...thresholds }
+    this.smoothingAlpha = options.smoothingAlpha ?? 0.58
     this.reset()
+  }
+
+  configure({ smoothingAlpha, moveDeadZone } = {}) {
+    if (Number.isFinite(smoothingAlpha)) this.smoothingAlpha = Math.max(0.1, Math.min(1, smoothingAlpha))
+    if (Number.isFinite(moveDeadZone)) this.thresholds.moveDeadZone = Math.max(0.001, Math.min(0.08, moveDeadZone))
   }
 
   reset() {
     this.lastCenterX = null
+    this.smoothedCenterX = null
     this.lastPlayerX = null
     this.lastAim = -Math.PI / 2
+    this.smoothedAim = null
     this.lastHandAngle = null
     this.rotationSinceShot = 0
     this.leftRaised = false
@@ -37,7 +45,9 @@ export class GestureTranslator {
       return { tracked: false, landmarks: landmarks ?? null, playerX: this.lastPlayerX, aim: this.lastAim, leftRaised: false, handAngle: null, throwPressed: false, movementDetected: false, aimDetected: false }
     }
 
-    const centerX = (shoulderL.x + shoulderR.x) / 2
+    const rawCenterX = (shoulderL.x + shoulderR.x) / 2
+    const centerX = this.smoothedCenterX === null ? rawCenterX : this.smoothedCenterX + (rawCenterX - this.smoothedCenterX) * this.smoothingAlpha
+    this.smoothedCenterX = centerX
     const moved = this.lastCenterX === null || Math.abs(centerX - this.lastCenterX) >= this.thresholds.moveDeadZone
     if (moved) {
       this.lastCenterX = centerX
@@ -51,7 +61,10 @@ export class GestureTranslator {
       // Preview and game coordinates are mirrored for intuitive right/left movement.
       const dx = shoulderR.x - wristR.x
       const dy = shoulderR.y - wristR.y
-      const measuredAim = Math.max(-Math.PI + 0.25, Math.min(-0.2, -Math.atan2(dy, dx)))
+      const rawAim = Math.max(-Math.PI + 0.25, Math.min(-0.2, -Math.atan2(dy, dx)))
+      const aimDelta = this.smoothedAim === null ? 0 : Math.atan2(Math.sin(rawAim - this.smoothedAim), Math.cos(rawAim - this.smoothedAim))
+      const measuredAim = this.smoothedAim === null ? rawAim : this.smoothedAim + aimDelta * this.smoothingAlpha
+      this.smoothedAim = measuredAim
       const aimChanged = Math.abs(measuredAim - this.lastAim) >= this.thresholds.aimDeadZoneRadians
       if (aimChanged) this.lastAim = measuredAim
     }
