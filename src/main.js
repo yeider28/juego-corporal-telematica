@@ -6,6 +6,26 @@ import { createRunLedger, calculateRunRates, calculateBer } from './sistemas/met
 import { renderBootError } from './ui/boot-error.js'
 import { createGameConfig } from './escenas/game-config.js'
 import { createObjectPool } from './entidades/object-pool.js'
+import { corruptFrameScore, penalizeScore, resolveLifeLoss } from './sistemas/rules.js'
+import { beginWave as startWave, isFinalWave, isWaveComplete } from './sistemas/oleadas.js'
+import { comboScoreMultiplier } from './sistemas/combo.js'
+import { congestionState } from './sistemas/congestion.js'
+import { collisionOverlapsAabb } from './sistemas/colisiones.js'
+import { bossPhaseForHealth } from './sistemas/jefe.js'
+import { spawnBlock as spawnNextBlock, spawnBoss as enterBoss } from './sistemas/entrada.js'
+import { renderMenuTitle } from './escenas/menu.js'
+import { renderLoadoutSelection } from './escenas/loadout.js'
+import { canAdvanceGameplay } from './escenas/juego.js'
+import { eligibleUpgrades } from './escenas/mejoras.js'
+import { setPausePanelVisible } from './escenas/pausa.js'
+import { formatRunDuration } from './escenas/resultados.js'
+import { UI } from './config/ui.js'
+import { DEFAULT_ACCESSIBILITY, readValidatedStorage, validateAccessibility, validateGestureTrials, validateRunSummary, validateScores } from './sistemas/storage.js'
+import { OPTIONAL_SPRITES, probeOptionalSprites } from './sistemas/sprites.js'
+
+function getLocalStorage() { try { return window.localStorage } catch { return null } }
+function safeLocalGet(key) { try { return getLocalStorage()?.getItem(key) ?? null } catch { return null } }
+function safeLocalSet(key, value) { try { getLocalStorage()?.setItem(key, value); return true } catch { return false } }
 
 const app = document.querySelector('#app')
 app.innerHTML = `
@@ -93,8 +113,7 @@ let returnFromOptions = 'menu'
 const loadoutSelection = { balls: ['parity', 'hamming'], perk: 'rapid', difficulty: 'normal' }
 
 const ACCESSIBILITY_KEY = 'tramas-accessibility-v1'
-const accessibility = { smoothing: 0.58, deadZone: 0.012, temporalMs: 140, reducedMotion: false, palette: 'default', textSize: 100, volume: 70, muted: false }
-try { Object.assign(accessibility, JSON.parse(localStorage.getItem(ACCESSIBILITY_KEY) || '{}')) } catch {}
+const accessibility = validateAccessibility(readValidatedStorage(getLocalStorage(), ACCESSIBILITY_KEY, validateAccessibility, DEFAULT_ACCESSIBILITY))
 function applyAccessibility() {
   document.documentElement.style.setProperty('--text-scale', `${accessibility.textSize / 100}`)
   document.documentElement.dataset.palette = accessibility.palette
@@ -114,7 +133,7 @@ function applyAccessibility() {
   const scene = window.gameInstance?.scene?.getScene?.('flow')
   if (scene) { scene.reducedMotion = accessibility.reducedMotion; scene.syncFallbackAudioVolume?.(); scene.updateAudioStatus?.() }
 }
-function saveAccessibility() { try { localStorage.setItem(ACCESSIBILITY_KEY, JSON.stringify(accessibility)) } catch {}; applyAccessibility() }
+function saveAccessibility() { safeLocalSet(ACCESSIBILITY_KEY, JSON.stringify(validateAccessibility(accessibility))); applyAccessibility() }
 function resumeAudioFromUserGesture() {
   const sound = window.gameInstance?.sound
   if (!sound) return
@@ -156,13 +175,13 @@ resultsPanel.addEventListener('click', (event) => {
 })
 resultsPanel.addEventListener('input', (event) => {
   if (event.target.id !== 'result-initials') return
-  document.querySelector('#save-score').disabled = !/[A-Z]/i.test(event.target.value)
+  event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)
+  document.querySelector('#save-score').disabled = !/^[A-Z0-9]{3,5}$/.test(event.target.value)
 })
 function renderLeaderboard(limit = 8) {
-  let scores = []
-  try { scores = JSON.parse(localStorage.getItem('tramas-y-bloques-scores') || '[]') } catch {}
+  const scores = readValidatedStorage(getLocalStorage(), 'tramas-y-bloques-scores', validateScores, [])
   if (!scores.length) return '<p class="empty-scores">Aún no hay puntajes guardados.</p>'
-  return `<table><thead><tr><th>#</th><th>INI</th><th>PUNTOS</th><th>OLEADA</th></tr></thead><tbody>${scores.slice().sort((a, b) => b.score - a.score).slice(0, limit).map((entry, i) => `<tr><td>${i + 1}</td><td>${String(entry.initials || '---').replace(/[^A-Z0-9-]/gi, '').slice(0, 3)}</td><td>${Number(entry.score) || 0}</td><td>${Number(entry.wave) || 1}</td></tr>`).join('')}</tbody></table>`
+  return `<table><thead><tr><th>#</th><th>INI</th><th>PUNTOS</th><th>OLEADA</th></tr></thead><tbody>${scores.slice().sort((a, b) => b.score - a.score).slice(0, limit).map((entry, i) => `<tr><td>${i + 1}</td><td>${String(entry.initials || '---').replace(/[^A-Z0-9]/gi, '').slice(0, 5)}</td><td>${Number(entry.score) || 0}</td><td>${Number(entry.wave) || 1}</td></tr>`).join('')}</tbody></table>`
 }
 document.querySelector('#tutorial-next').addEventListener('click', () => window.gameInstance?.scene?.getScene('flow')?.advanceTutorial())
 document.querySelector('#tutorial-skip').addEventListener('click', () => window.gameInstance?.scene?.getScene('flow')?.finishTutorial())
@@ -179,44 +198,23 @@ document.querySelector('#setting-text-size').addEventListener('input', (event) =
 document.querySelector('#setting-volume').addEventListener('input', (event) => { document.querySelector('#volume-value').value = `${event.target.value}%` })
 applyAccessibility()
 
-function renderLoadoutSelection() {
-  document.querySelectorAll('[data-loadout-ball]').forEach((button) => {
-    const selected = loadoutSelection.balls.includes(button.dataset.loadoutBall)
-    button.classList.toggle('is-selected', selected)
-    button.setAttribute('aria-pressed', String(selected))
-    button.disabled = selected && loadoutSelection.balls.length <= 1
-    const status = button.querySelector('.loadout-status')
-    status.textContent = selected ? '✓ Equipado' : loadoutSelection.balls.length >= 2 ? 'Máximo 2 alcanzado · Toca para intercambiar' : 'Toca para equipar'
-  })
-  document.querySelectorAll('[data-loadout-perk]').forEach((button) => {
-    const selected = button.dataset.loadoutPerk === loadoutSelection.perk
-    button.classList.toggle('is-selected', selected)
-    button.setAttribute('aria-pressed', String(selected))
-  })
-  document.querySelectorAll('[data-difficulty]').forEach((button) => {
-    const selected = button.dataset.difficulty === loadoutSelection.difficulty
-    button.classList.toggle('is-selected', selected)
-    button.setAttribute('aria-pressed', String(selected))
-  })
-}
-
 document.querySelectorAll('[data-loadout-ball]').forEach((button) => button.addEventListener('click', () => {
   const ball = button.dataset.loadoutBall
   if (loadoutSelection.balls.includes(ball)) loadoutSelection.balls = loadoutSelection.balls.filter((value) => value !== ball)
-  else if (loadoutSelection.balls.length < 2) loadoutSelection.balls.push(ball)
+  else if (loadoutSelection.balls.length < UI.loadout.maxMethods) loadoutSelection.balls.push(ball)
   else loadoutSelection.balls.splice(0, 1, ball)
-  renderLoadoutSelection()
+  renderLoadoutSelection(loadoutSelection)
 }))
 document.querySelectorAll('[data-loadout-perk]').forEach((button) => button.addEventListener('click', () => {
   loadoutSelection.perk = button.dataset.loadoutPerk
-  renderLoadoutSelection()
+  renderLoadoutSelection(loadoutSelection)
 }))
 document.querySelectorAll('[data-difficulty]').forEach((button) => button.addEventListener('click', () => {
   loadoutSelection.difficulty = button.dataset.difficulty
-  renderLoadoutSelection()
+  renderLoadoutSelection(loadoutSelection)
 }))
 document.querySelector('#start-run').addEventListener('click', () => window.dispatchEvent(new Event('start-game-run')))
-renderLoadoutSelection()
+renderLoadoutSelection(loadoutSelection)
 const testStorageKey = 'tramas-y-bloques-gesture-test'
 const gestureTrials = {
   move: { label: 'MOVERSE', success: 0, failure: 0, falsePositive: 0 },
@@ -225,16 +223,11 @@ const gestureTrials = {
 }
 
 try {
-  const saved = JSON.parse(localStorage.getItem(testStorageKey) || '{}')
-  for (const key of Object.keys(gestureTrials)) {
-    for (const outcome of ['success', 'failure', 'falsePositive']) {
-      gestureTrials[key][outcome] = Math.max(0, Number(saved[key]?.[outcome]) || 0)
-    }
-  }
+  Object.assign(gestureTrials, readValidatedStorage(getLocalStorage(), testStorageKey, validateGestureTrials, gestureTrials))
 } catch {}
 
 function persistGestureTrials() {
-  try { localStorage.setItem(testStorageKey, JSON.stringify(gestureTrials)) } catch {}
+  safeLocalSet(testStorageKey, JSON.stringify(validateGestureTrials(gestureTrials)))
 }
 
 function renderGestureTrials() {
@@ -252,7 +245,7 @@ debugTrials.addEventListener('click', (event) => {
   if (!button) return
   const trial = gestureTrials[button.dataset.gesture]
   if (!trial || !(button.dataset.outcome in trial)) return
-  trial[button.dataset.outcome]++
+  trial[button.dataset.outcome] = Math.min(1_000_000, trial[button.dataset.outcome] + 1)
   persistGestureTrials()
   renderGestureTrials()
 })
@@ -314,6 +307,7 @@ if (!window.Phaser) {
 } else {
   const W = 960
   const H = 540
+  const optionalSpriteFiles = await probeOptionalSprites(import.meta.env.BASE_URL)
       const COLORS = { cyan: 0x18e6e1, red: 0xff416d, blue: 0x6979ff, gold: 0xffcb57, green: 0x6bff9f, white: 0xeaf8ff, muted: 0x78909f, bg: 0x08121f, panel: 0x0d1b2b }
   const TYPE = { parity: { name: 'PARIDAD', color: COLORS.cyan }, crc: { name: 'CRC', color: COLORS.blue }, hamming: { name: 'HAMMING', color: COLORS.gold } }
   let currentScene
@@ -331,20 +325,8 @@ if (!window.Phaser) {
       this.audioKeys = new Set(Object.keys(sounds))
       this.missingAudio = new Set()
       this.load.on('loaderror', (file) => { if (this.audioKeys.has(file.key)) this.missingAudio.add(file.key) })
-      const sprites = [
-        ['sprite-node', 'protagonista_quieto.png', 64, 64],
-        ['sprite-healthy', 'trama_sana_bajando.png', 64, 32],
-        ['sprite-corrupt', 'trama_corrupta_error.png', 64, 32],
-        ['sprite-boss', 'jefe_masivo.png', 192, 96],
-        ['sprite-projectiles', 'proyectiles_tipos.png', 32, 32],
-        ['sprite-far', 'fondo_lejano.png', 1280, 720],
-        ['sprite-parallax', 'fondo_parallax.png', 1280, 720],
-        ['sprite-near', 'fondo_cercano.png', 1280, 720],
-        ['sprite-circuits', 'tileset_circuitos.png', 256, 256],
-        ['sprite-ui', 'ui_elementos.png', 512, 64],
-      ]
-      for (const [key, file, frameWidth, frameHeight] of sprites) {
-        this.load.spritesheet(key, `${base}assets/sprites/${file}`, { frameWidth, frameHeight })
+      for (const [key, file, frameWidth, frameHeight] of OPTIONAL_SPRITES) {
+        if (optionalSpriteFiles.has(file)) this.load.spritesheet(key, `${base}assets/sprites/${file}`, { frameWidth, frameHeight })
       }
       for (const [key, file] of Object.entries(sounds)) this.load.audio(key, `${base}assets/sonidos/${file}`)
     }
@@ -367,18 +349,20 @@ if (!window.Phaser) {
       this.congested = false
       this.hitStopMs = 0
       this.invulnMs = 0
-      this.screenShakeEnabled = localStorage.getItem('tramas-screen-shake') !== 'false'
+      this.screenShakeEnabled = safeLocalGet('tramas-screen-shake') !== 'false'
       this.reducedMotion = accessibility.reducedMotion
       this.slowMotionMs = 0
       this.bitErrors = 0
       this.totalBits = 0
       this.ledger = createRunLedger(); this.metrics = this.ledger.totals; this.waveMetrics = this.ledger.waves
       this.selectedBall = 'parity'
-      this.upgrades = { rapid: 0, multi: 0, shield: 0, pierce: 0, hammingArea: 0, bigBall: 0, slowBlocks: 0, scoreMagnet: 0, extraLife: 0 }
+      this.upgrades = { rapid: 0, multi: 0, shield: 0, pierce: 0, hammingArea: 0, bigBall: 0, slowBlocks: 0, scoreMagnet: 0, extraLife: 0, fusionParity: 0, fusionCrc: 0, fusionHamming: 0 }
       this.difficulty = BALANCE.difficulty.normal
       this.shotHeat = 0
       this.blocks = []
       this.shots = []
+      this.powerUps = []
+      this.activePowerUps = { shieldMs: 0, slowMs: 0 }
       this.blockPool = []
       this.shotPool = []
       this.projectileVisualPool = []
@@ -394,16 +378,16 @@ if (!window.Phaser) {
       this.spawned = 0
       this.waveTotal = 0
       this.boss = null
-      this.lastTime = 0
       this.keys = this.input.keyboard.addKeys('LEFT,RIGHT,A,F,SPACE,ONE,TWO,THREE,ENTER,ESC,UP,DOWN,V')
-      this.pointerFire = false
-      this.input.on('pointerdown', (p) => { if (this.mode === 'title') this.startRun(); else if (this.mode === 'playing') this.fire() })
-      this.input.on('pointermove', (pointer) => { if (this.mode === 'playing' && !window.poseControl?.active && (pointer.isDown || pointer.wasMoved)) this.aim = Phaser.Math.Clamp(Math.atan2(pointer.worldY - this.player.y, pointer.worldX - this.player.x), -Math.PI + 0.2, -0.2) })
+      this.handlePointerDown = () => { if (this.mode === 'title') this.startRun(); else if (this.mode === 'playing') this.fire() }
+      this.handlePointerMove = (pointer) => { if (this.mode === 'playing' && !window.poseControl?.active && (pointer.isDown || pointer.wasMoved) && this.player) this.aim = Phaser.Math.Clamp(Math.atan2(pointer.worldY - this.player.y, pointer.worldX - this.player.x), -Math.PI + 0.2, -0.2) }
+      this.input.on('pointerdown', this.handlePointerDown)
+      this.input.on('pointermove', this.handlePointerMove)
       this.drawBackground()
       this.startBackgroundMusic()
       this.createOptionalAnimations()
       this.renderTitle()
-      this.events.once('shutdown', () => { currentScene = null })
+      this.events.once('shutdown', () => { this.input.off('pointerdown', this.handlePointerDown); this.input.off('pointermove', this.handlePointerMove); this.handlePointerDown = null; this.handlePointerMove = null; currentScene = null })
     }
 
     updateAudioStatus() {
@@ -455,7 +439,7 @@ if (!window.Phaser) {
 
     playAudio(key, config = {}) {
       const exists = !this.missingAudio?.has(key) && this.cache.audio.exists(key)
-      if (exists) return this.sound.play(key, config)
+      if (exists) { try { return this.sound.play(key, config) } catch { this.missingAudio.add(key) } }
       const context = this.ensureFallbackAudio()
       if (!context || key === 'bgm') return null
       if (context.state === 'suspended') context.resume().catch(() => {})
@@ -480,7 +464,7 @@ if (!window.Phaser) {
       if (this.musicStarted) return
       if (!this.missingAudio?.has('bgm') && this.cache.audio.exists('bgm')) {
         this.bgmSound = this.sound.add('bgm', { loop: true, volume: 0.3 })
-        this.bgmSound.play()
+        try { this.bgmSound.play() } catch { this.missingAudio.add('bgm'); this.bgmSound = null }
       } else {
         this.bgmFallbackRequested = true
         this.startFallbackMusic()
@@ -599,14 +583,7 @@ if (!window.Phaser) {
     }
 
     renderTitle() {
-      this.mode = 'title'
-      this.titleShade = this.add.rectangle(W / 2, H / 2, W, H, 0x06111e, 0.62)
-      this.titleTop = this.text(W / 2, 150, 'SIMULADOR DE INTEGRIDAD // 001', 13, '#18e6e1', { originX: 0.5, letterSpacing: 3 })
-      this.titleMain = this.text(W / 2, 205, 'TRAMAS Y BLOQUES', 43, '#eaf8ff', { originX: 0.5, fontStyle: 'bold', letterSpacing: 3 })
-      this.titleSub = this.text(W / 2, 263, 'EL RUIDO ESTÁ EN LA LÍNEA. ¿PUEDES DETECTARLO?', 13, '#8da6b9', { originX: 0.5, letterSpacing: 1 })
-      this.titlePrompt = this.text(W / 2, 352, 'CONFIGURA TU LOADOUT PARA INICIAR', 15, '#18e6e1', { originX: 0.5 })
-      this.titleHelp = this.text(W / 2, 390, '5 oleadas · 5 vidas · usa cámara o teclado', 12, '#8da6b9', { originX: 0.5 })
-      if (!this.reducedMotion) this.tweens.add({ targets: this.titlePrompt, alpha: 0.25, duration: 720, yoyo: true, repeat: -1 })
+      renderMenuTitle(this, W, H)
     }
 
     clearTitle() {
@@ -649,12 +626,15 @@ if (!window.Phaser) {
       this.ledger = createRunLedger(); this.metrics = this.ledger.totals; this.waveMetrics = this.ledger.waves
       this.combo = 0; this.congested = false; this.hitStopMs = 0
       this.invulnMs = 0; this.slowMotionMs = 0
-      this.upgrades = { rapid: 0, multi: 0, shield: 0, pierce: 0, hammingArea: 0, bigBall: 0, slowBlocks: 0, scoreMagnet: 0, extraLife: 0 }; this.upgrades[loadoutSelection.perk] = 1
+      this.upgrades = { rapid: 0, multi: 0, shield: 0, pierce: 0, hammingArea: 0, bigBall: 0, slowBlocks: 0, scoreMagnet: 0, extraLife: 0, fusionParity: 0, fusionCrc: 0, fusionHamming: 0 }; this.upgrades[loadoutSelection.perk] = 1
       this.shotHeat = 0
       this.equippedBalls = [...loadoutSelection.balls]
       this.selectedBall = this.equippedBalls[0]
-      document.querySelector('#method-summary-status').textContent = ({ parity: 'PARIDAD', crc: 'CRC', hamming: 'HAMMING' })[this.selectedBall] || this.selectedBall.toUpperCase()
+      this.selectBall(this.selectedBall)
       this.blocks = []; this.shots = []; this.boss = null
+      this.powerUps?.forEach((powerUp) => powerUp.container.destroy())
+      this.powerUps = []
+      this.activePowerUps = { shieldMs: 0, slowMs: 0 }
       this.player = { x: W / 2, y: H - 72, radius: 18 }
       this.actor = this.add.container(this.player.x, this.player.y)
       const glow = this.add.circle(0, 0, 48, COLORS.cyan, 0.2)
@@ -671,6 +651,8 @@ if (!window.Phaser) {
       this.aimGraphics = this.add.graphics()
       this.aimGraphics.setDepth(8)
       this.hud = this.add.container(0, 0).setDepth(30)
+      this.powerUpText = this.text(W / 2, H - 18, '', 12, '#ffcb57', { originX: 0.5, fontStyle: 'bold' }).setDepth(30).setVisible(false)
+      this.hud.add(this.powerUpText)
       this.hud.add(this.add.rectangle(W / 2, 38, W, 76, 0x06111e, 0.94).setStrokeStyle(1, COLORS.cyan, 0.24))
       this.hud.add([this.text(24, 17, 'OLEADA', 11, '#78909f'), this.text(24, 34, '', 19, '#18e6e1', { fontStyle: 'bold' })]); this.waveText = this.hud.list[1]
       this.hud.add([this.text(172, 17, 'VIDAS', 11, '#78909f'), this.text(172, 37, '', 15, '#ff416d')]); this.lifeText = this.hud.list[3]
@@ -697,24 +679,15 @@ if (!window.Phaser) {
       this.bossAttackGraphics = this.add.graphics().setDepth(6)
       this.wave = 1; this.beginWave()
       this.mode = 'playing'
-      if (localStorage.getItem('tramas-tutorial-complete') !== 'true') this.startTutorial()
+      if (safeLocalGet('tramas-tutorial-complete') !== 'true') this.startTutorial()
     }
 
     startTutorial() { tutorialStep = 0; tutorialMessage.textContent = tutorialSteps[tutorialStep]; tutorialPanel.hidden = false; this.mode = 'tutorial' }
     advanceTutorial() { if (this.mode !== 'tutorial') return; tutorialStep++; if (tutorialStep >= tutorialSteps.length) this.finishTutorial(); else tutorialMessage.textContent = tutorialSteps[tutorialStep]; document.querySelector('#tutorial-next').textContent = tutorialStep === tutorialSteps.length - 1 ? 'EMPEZAR' : 'SIGUIENTE' }
-    finishTutorial() { tutorialPanel.hidden = true; localStorage.setItem('tramas-tutorial-complete', 'true'); this.mode = 'playing' }
+    finishTutorial() { tutorialPanel.hidden = true; safeLocalSet('tramas-tutorial-complete', 'true'); this.mode = 'playing' }
 
     beginWave() {
-      this.ledger.beginWave(this.wave)
-      this.updateMusicForWave()
-      const waveConfig = BALANCE.waves[this.wave]
-      this.waveTotal = waveConfig.count
-      this.spawned = 0
-      this.spawnTimer = 0.5
-      this.boss = null
-      if (this.wave === 5) this.spawnBoss()
-      this.updateHud()
-      this.showToast(this.wave === 5 ? 'ALERTA: TRAMA MASIVA' : `OLEADA ${String(this.wave).padStart(2, '0')} // INICIADA`)
+      startWave(this, BALANCE)
     }
 
     recordMetric(key, amount = 1) {
@@ -751,6 +724,7 @@ if (!window.Phaser) {
       if (this.shotHeat > 0.65) this.cooldownBar?.setFillStyle(COLORS.red)
       this.comboBar?.setDisplaySize(128 * Math.min(1, this.combo / 12), 5)
       this.bossHud?.setVisible(Boolean(this.boss?.alive))
+      this.updatePowerUpHud()
       if (this.boss?.alive) {
         this.bossBar.setDisplaySize(356 * Math.max(0, this.boss.hp / this.boss.maxHp), 8)
         this.bossPhaseText.setText(`FASE ${this.boss.phase} · ${this.boss.hp}/${this.boss.maxHp}`)
@@ -759,16 +733,21 @@ if (!window.Phaser) {
 
     loseLife(playError = true, cause = 'corrupt') {
       if (this.invulnMs > 0) return false
-      if (this.upgrades.shield > 0) {
-        this.upgrades.shield--
+      if (this.activePowerUps?.shieldMs > 0) {
+        this.showToast('ESCUDO DE RED · IMPACTO BLOQUEADO')
+        return false
+      }
+      const result = resolveLifeLoss({ lives: this.lives, invulnMs: this.invulnMs, shield: this.upgrades.shield, cause })
+      if (!result.lost) {
+        this.upgrades.shield = result.shield
         this.showToast('ESCUDO ACTIVADO · VIDA PROTEGIDA')
         this.updateHud()
         return false
       } else {
-        this.lives--
+        this.lives = result.lives
         this.lifeLossCounts[cause] = (this.lifeLossCounts[cause] || 0) + 1
         this.lastLifeLossCause = cause
-        this.invulnMs = BALANCE.player.invulnerabilityMs
+        this.invulnMs = result.invulnMs
         if (playError) this.playAudio('error')
       }
       if (this.lives <= 0) {
@@ -780,7 +759,7 @@ if (!window.Phaser) {
       return true
     }
 
-    comboMultiplier() { return Math.min(BALANCE.score.maxComboMultiplier, 1 + Math.floor(this.combo / BALANCE.score.precisionComboThreshold) * BALANCE.score.comboMultiplierStep) }
+    comboMultiplier() { return comboScoreMultiplier(this.combo) }
 
     recordCorruptKill() {
       this.combo++
@@ -882,25 +861,52 @@ if (!window.Phaser) {
     }
 
     spawnBoss() {
-      this.playAudio('jefe')
-      const boss = this.createBlock(W / 2, -80, true, true, BALANCE.waves[5].bossHealth)
-      boss.entering = true
-      boss.container.setScale(0.72)
-      this.tweens.add({ targets: boss.container, y: 145, scale: 1, duration: 1050, ease: 'Back.Out', onComplete: () => { if (boss.alive) { boss.y = 145; boss.entering = false } } })
-      this.bossHud?.setVisible(true)
-      this.showToast('ENTRADA DE TRAMA MASIVA')
-      this.spawned = 1
+      enterBoss(this, BALANCE, W)
     }
 
     spawnBlock() {
-      if (this.spawned >= this.waveTotal) return
-      const waveConfig = BALANCE.waves[this.wave]
-      const corrupted = Math.random() < waveConfig.corruptChance
-      const block = this.createBlock(90 + Math.random() * (W - 180), -35, corrupted)
-      block.zigzag = this.wave === 4 && Math.random() < 0.65
-      block.originX = block.x
-      block.zigzagPhase = Math.random() * Math.PI * 2
-      this.spawned++
+      spawnNextBlock(this, BALANCE, W)
+    }
+
+    maybeDropPowerUp(x, y) {
+      if (Math.random() >= BALANCE.powerUps.dropChance) return
+      const type = Math.random() < 0.5 ? 'shield' : 'slow'
+      const color = type === 'shield' ? COLORS.gold : COLORS.blue
+      const icon = type === 'shield' ? '⬡' : '◷'
+      const container = this.add.container(x, y).setDepth(12)
+      container.add(this.add.circle(0, 0, 13, 0x08121f, 0.94).setStrokeStyle(2, color, 1))
+      container.add(this.add.text(0, 0, icon, { fontFamily: 'IBM Plex Mono, Consolas, monospace', fontSize: '17px', color: `#${color.toString(16).padStart(6, '0')}`, fontStyle: 'bold' }).setOrigin(0.5))
+      this.tweens.add({ targets: container, scale: 1.18, duration: 420, yoyo: true, repeat: -1 })
+      this.powerUps.push({ type, x, y, container })
+    }
+
+    updatePowerUpHud() {
+      if (!this.powerUpText) return
+      const effects = []
+      if (this.activePowerUps.shieldMs > 0) effects.push(`⬡ ESCUDO ${Math.ceil(this.activePowerUps.shieldMs / 1000)}s`)
+      if (this.activePowerUps.slowMs > 0) effects.push(`◷ FLUJO LENTO ${Math.ceil(this.activePowerUps.slowMs / 1000)}s`)
+      this.powerUpText.setText(effects.join('   ·   ')).setVisible(effects.length > 0)
+    }
+
+    updatePowerUps(delta, dt) {
+      this.activePowerUps.shieldMs = Math.max(0, this.activePowerUps.shieldMs - delta)
+      this.activePowerUps.slowMs = Math.max(0, this.activePowerUps.slowMs - delta)
+      for (const powerUp of [...this.powerUps]) {
+        powerUp.y += BALANCE.powerUps.fallSpeed * dt
+        powerUp.container.setPosition(powerUp.x, powerUp.y)
+        if (Math.abs(powerUp.x - this.player.x) <= BALANCE.powerUps.catchRadius && Math.abs(powerUp.y - this.player.y) <= BALANCE.powerUps.catchRadius) {
+          if (powerUp.type === 'shield') this.activePowerUps.shieldMs = BALANCE.powerUps.shieldDurationMs
+          if (powerUp.type === 'slow') this.activePowerUps.slowMs = BALANCE.powerUps.slowDurationMs
+          this.playAudio('mejora')
+          this.showToast(powerUp.type === 'shield' ? 'POWER-UP · ESCUDO DE RED' : 'POWER-UP · FLUJO RALENTIZADO')
+          powerUp.container.destroy()
+          this.powerUps = this.powerUps.filter((entry) => entry !== powerUp)
+        } else if (powerUp.y > H + 20) {
+          powerUp.container.destroy()
+          this.powerUps = this.powerUps.filter((entry) => entry !== powerUp)
+        }
+      }
+      this.updatePowerUpHud()
     }
 
     createProjectileVisual(x, y, type, radius) {
@@ -944,7 +950,10 @@ if (!window.Phaser) {
       const angle = this.aim
       const speed = this.selectedBall === 'crc' ? BALANCE.combat.crcShotSpeed : BALANCE.combat.shotSpeed
       const vx = Math.cos(angle) * speed; const vy = Math.sin(angle) * speed
-      const shot = this.acquireShot(this.player.x, this.player.y - 18, vx, vy, this.selectedBall, (this.selectedBall === 'hamming' ? 8 : 6) + this.upgrades.bigBall * 2)
+      const fusionKey = `fusion${this.selectedBall[0].toUpperCase()}${this.selectedBall.slice(1)}`
+      const fusionLevel = this.upgrades[fusionKey] || 0
+      const shotRadius = (this.selectedBall === 'hamming' ? 8 : 6) + this.upgrades.bigBall * 2 + fusionLevel * 2
+      const shot = this.acquireShot(this.player.x, this.player.y - 18, vx, vy, this.selectedBall, shotRadius)
       this.shotHeat = Math.min(1, this.shotHeat + BALANCE.combat.spamHeatPerShot)
       const baseCooldown = BALANCE.combat.shotCooldownSeconds - this.upgrades.rapid * BALANCE.combat.rapidReductionSeconds
       const heatPenalty = this.shotHeat > 0.65 ? (this.shotHeat - 0.65) * BALANCE.combat.maxHeatCooldownSeconds : 0
@@ -955,9 +964,15 @@ if (!window.Phaser) {
       this.tweens.add({ targets: muzzle, alpha: 0, scale: 2.2, duration: 100, onComplete: () => muzzle.destroy() })
       if (this.screenShakeEnabled && !this.reducedMotion) this.cameras.main.shake(45, 0.0015)
       if (this.upgrades.multi > 0 && this.shots.filter((entry) => entry.alive).length < this.maxShots) {
-        for (const offset of [-0.09, 0.09]) {
-          if (this.shots.filter((entry) => entry.alive).length >= this.maxShots) break
-          this.acquireShot(this.player.x, this.player.y - 18, Math.cos(angle + offset) * speed, Math.sin(angle + offset) * speed, shot.type, shot.radius)
+        if (fusionLevel > 0) {
+          if (this.shots.filter((entry) => entry.alive).length < this.maxShots) {
+            this.acquireShot(this.player.x, this.player.y - 18, vx, vy, shot.type, shot.radius + 4 * fusionLevel)
+          }
+        } else {
+          for (const offset of [-0.09, 0.09]) {
+            if (this.shots.filter((entry) => entry.alive).length >= this.maxShots) break
+            this.acquireShot(this.player.x, this.player.y - 18, Math.cos(angle + offset) * speed, Math.sin(angle + offset) * speed, shot.type, shot.radius)
+          }
         }
       }
     }
@@ -986,10 +1001,10 @@ if (!window.Phaser) {
               this.floatingText(neighbor.x, neighbor.y - 20, 'CORREGIDO', '#6bff9f')
             }
           }
-        } else { this.recordMetric('misfires'); this.markProcessed(block); this.playAudio('error'); this.breakCombo(); this.score = Math.max(0, this.score - BALANCE.score.hammingHealthyPenalty); this.emitBurst(block.x, block.y, COLORS.red); this.flashBlockError(block); this.floatingText(block.x, block.y - 25, 'TRAMA SANA · ERROR', '#ff416d') }
+        } else { this.recordMetric('misfires'); this.markProcessed(block); this.playAudio('error'); this.breakCombo(); this.score = penalizeScore(this.score, BALANCE.score.hammingHealthyPenalty); this.emitBurst(block.x, block.y, COLORS.red); this.flashBlockError(block); this.floatingText(block.x, block.y - 25, 'TRAMA SANA · ERROR', '#ff416d') }
         this.destroyShot(shot)
       } else if (!block.corrupted && !block.boss) {
-        this.recordMetric('misfires'); this.markProcessed(block); this.playAudio('error'); this.breakCombo(); const lifeLost = this.loseLife(false, 'healthy'); this.score = Math.max(0, this.score - BALANCE.score.healthyPenalty); this.emitBurst(block.x, block.y, COLORS.red); block.hitError = true; this.flashBlockError(block); this.floatingText(block.x, block.y - 25, 'TRAMA SANA · ERROR', '#ff416d'); if (lifeLost) this.triggerDamageFeedback(); this.time.delayedCall(360, () => { this.removeBlock(block); this.updateHud() }); this.destroyShot(shot); this.updateHud()
+        this.recordMetric('misfires'); this.markProcessed(block); this.playAudio('error'); this.breakCombo(); const lifeLost = this.loseLife(false, 'healthy'); this.score = penalizeScore(this.score, BALANCE.score.healthyPenalty); this.emitBurst(block.x, block.y, COLORS.red); block.hitError = true; this.flashBlockError(block); this.floatingText(block.x, block.y - 25, 'TRAMA SANA · ERROR', '#ff416d'); if (lifeLost) this.triggerDamageFeedback(); this.time.delayedCall(360, () => { this.removeBlock(block); this.updateHud() }); this.destroyShot(shot); this.updateHud()
         if (this.lives <= 0) this.finishRun(false)
       } else if (block.boss) {
         block.hp -= BALANCE.combat.damage; block.label.setText(`TRAMA MASIVA · FASE ${block.phase}`); this.score += BALANCE.score.bossHit; this.emitBurst(block.x + Phaser.Math.Between(-35, 35), block.y + 10, TYPE[shot.type].color); this.floatingText(block.x, block.y - 38, `+${BALANCE.score.bossHit}`, '#ffb4c5'); this.updateBossPhase(block)
@@ -999,9 +1014,8 @@ if (!window.Phaser) {
         this.playAudio('impacto', { detune: Phaser.Math.Between(-60, 60) })
         this.recordMetric('detected')
         const multiplier = this.recordCorruptKill()
-        const basePoints = shot.type === 'crc' ? BALANCE.score.corruptCrc : BALANCE.score.corruptParity
-        const points = Math.round(basePoints * multiplier * (1 + this.upgrades.scoreMagnet * 0.12))
-        this.score += points; this.triggerHitStop(32); this.floatingText(block.x, block.y - 20, `+${points}`, '#6bff9f'); this.disintegrateBlock(block); this.removeBlock(block)
+        const points = corruptFrameScore({ type: shot.type, comboMultiplier: multiplier, scoreMagnetUpgrades: this.upgrades.scoreMagnet })
+        this.score += points; this.triggerHitStop(32); this.floatingText(block.x, block.y - 20, `+${points}`, '#6bff9f'); this.disintegrateBlock(block); this.maybeDropPowerUp(block.x, block.y); this.removeBlock(block)
         if (this.screenShakeEnabled && !this.reducedMotion) this.cameras.main.shake(55, 0.0018)
         if (shot.type === 'crc' && this.upgrades.pierce > shot.pierces) { shot.pierces++; shot.hits.clear() }
         else if (shot.type === 'crc') this.bounceShot(shot)
@@ -1035,8 +1049,7 @@ if (!window.Phaser) {
     }
 
     updateBossPhase(boss) {
-      const ratio = boss.hp / boss.maxHp
-      const phase = ratio <= 1 / 3 ? 3 : ratio <= 2 / 3 ? 2 : 1
+      const phase = bossPhaseForHealth(boss.hp, boss.maxHp)
       if (phase === boss.phase) return
       boss.phase = phase
       boss.attackTimer = Math.max(1, boss.attackTimer - 0.4)
@@ -1152,10 +1165,10 @@ if (!window.Phaser) {
         if (this.mode === 'results' && (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) || Phaser.Input.Keyboard.JustDown(this.keys.ENTER))) this.startRun()
         return
       }
-      if (this.mode !== 'playing') return
+      if (!canAdvanceGameplay(this)) return
       if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
         this.screenShakeEnabled = !this.screenShakeEnabled
-        localStorage.setItem('tramas-screen-shake', String(this.screenShakeEnabled))
+        safeLocalSet('tramas-screen-shake', String(this.screenShakeEnabled))
         cameraState.textContent = `Temblor ${this.screenShakeEnabled ? 'activado' : 'desactivado'} · V para cambiar`
       }
       if (this.hitStopMs > 0) {
@@ -1195,6 +1208,7 @@ if (!window.Phaser) {
       if (!this.reducedMotion && this.actor && this.invulnMs > 0) this.actor.setAlpha(Math.floor(this.invulnMs / 90) % 2 ? 0.35 : 1)
       else this.actor?.setAlpha(1)
       this.drawAimPrediction()
+      this.updatePowerUps(delta, dt)
       if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.selectBall(this.equippedBalls[0])
       if (Phaser.Input.Keyboard.JustDown(this.keys.TWO) && this.equippedBalls[1]) this.selectBall(this.equippedBalls[1])
       if (this.keys.SPACE.isDown) this.fire()
@@ -1205,12 +1219,14 @@ if (!window.Phaser) {
       this.updateBoss(delta, dt)
       if (this.mode !== 'playing') return
       const queuedBlocks = this.blocks.filter((block) => block.alive).length
-      if (!this.congested && queuedBlocks >= 5) { this.congested = true; this.showToast('BUFFER LLENO · CONGESTIÓN') ; this.updateHud() }
-      else if (this.congested && queuedBlocks <= 2) { this.congested = false; this.showToast('BUFFER ESTABLE · FLUJO NORMAL'); this.updateHud() }
+      const wasCongested = this.congested
+      this.congested = congestionState(this.congested, queuedBlocks)
+      if (!wasCongested && this.congested) { this.showToast('BUFFER LLENO · CONGESTIÓN'); this.updateHud() }
+      else if (wasCongested && !this.congested) { this.showToast('BUFFER ESTABLE · FLUJO NORMAL'); this.updateHud() }
       for (const block of [...this.blocks]) {
         if (!block.alive) continue
         if (block.hitError || (block.boss && block.entering)) continue
-        block.y += block.speed * (this.congested ? BALANCE.buffer.speedMultiplier : 1) * dt
+        block.y += block.speed * (this.congested ? BALANCE.buffer.speedMultiplier : 1) * (this.activePowerUps.slowMs > 0 ? BALANCE.powerUps.slowSpeedMultiplier : 1) * dt
         if (block.zigzag) block.x = Phaser.Math.Clamp(block.originX + Math.sin(time * 0.0022 + block.zigzagPhase) * 68, 55, W - 55)
         block.container.setPosition(block.x, block.y)
         if (block.y >= H - 68 && !block.boss) {
@@ -1235,10 +1251,10 @@ if (!window.Phaser) {
         if (shot.bounces >= 3 || shot.y < 0 || shot.y > H) { this.destroyShot(shot); continue }
         shot.dot.setPosition(shot.x, shot.y); shot.aura.setPosition(shot.x, shot.y); shot.sprite?.setPosition(shot.x, shot.y)
         for (const block of [...this.blocks]) {
-          if (block.alive && Math.abs(shot.x - block.x) < block.w / 2 + shot.radius && Math.abs(shot.y - block.y) < block.h / 2 + shot.radius) { this.hitBlock(shot, block); if (this.mode !== 'playing') return; if (!shot.alive) break }
+          if (block.alive && collisionOverlapsAabb(shot.x, shot.y, shot.radius, block)) { this.hitBlock(shot, block); if (this.mode !== 'playing') return; if (!shot.alive) break }
         }
       }
-      if (this.spawned >= this.waveTotal && this.blocks.every((b) => !b.alive)) this.completeWave()
+      if (isWaveComplete({ spawned: this.spawned, total: this.waveTotal, blocks: this.blocks })) this.completeWave()
     }
 
     drawAimPrediction() {
@@ -1278,7 +1294,9 @@ if (!window.Phaser) {
       if (!type || !this.equippedBalls.includes(type)) return
       this.selectedBall = type
       const names = { parity: 'PARIDAD', crc: 'CRC', hamming: 'HAMMING' }
-      document.querySelector('#method-summary-status').textContent = names[type] || type.toUpperCase()
+      const fusionKey = `fusion${type[0].toUpperCase()}${type.slice(1)}`
+      const evolvedName = `${names[type] || type.toUpperCase()}${'+'.repeat(Math.min(2, this.upgrades[fusionKey] || 0))}`
+      document.querySelector('#method-summary-status').textContent = evolvedName
     }
 
     completeWave() {
@@ -1287,7 +1305,7 @@ if (!window.Phaser) {
     }
 
     completeWaveAfterFade() {
-      if (this.wave >= 5) {
+      if (isFinalWave(this.wave)) {
         this.slowMotionMs = 420
         if (this.screenShakeEnabled && !this.reducedMotion) this.cameras.main.shake(240, 0.003)
         if (!this.reducedMotion) this.cameras.main.flash(260, 24, 230, 225, false)
@@ -1308,13 +1326,13 @@ if (!window.Phaser) {
       this.bossAttackGraphics?.setVisible(false)
       this.aimGraphics?.clear().setVisible(false)
       this.actor?.setAlpha(0.46)
-      const eligible = BALANCE.upgrades.filter((upgrade) => {
-        if (upgrade.key === 'pierce' && !this.equippedBalls.includes('crc')) return false
-        if (upgrade.key === 'hammingArea' && !this.equippedBalls.includes('hamming')) return false
-        return true
-      })
+      const eligible = eligibleUpgrades(BALANCE.upgrades, this.equippedBalls, this.upgrades)
       const choices = Phaser.Utils.Array.Shuffle([...eligible]).slice(0, 3)
-      const iconByKey = { rapid: '»', multi: '×', shield: '⬡', pierce: '↠', hammingArea: '✳', bigBall: '●', slowBlocks: '◷', scoreMagnet: '✦', extraLife: '♥' }
+      const forcedChoice = this.upgrades.multi < 1
+        ? eligible.find((upgrade) => upgrade.key === 'multi')
+        : Phaser.Utils.Array.Shuffle(eligible.filter((upgrade) => upgrade.key.startsWith('fusion')))[0]
+      if (forcedChoice && !choices.some((choice) => choice.key === forcedChoice.key)) choices[choices.length - 1] = forcedChoice
+      const iconByKey = { rapid: '»', multi: '×', shield: '⬡', pierce: '↠', hammingArea: '✳', bigBall: '●', slowBlocks: '◷', scoreMagnet: '✦', extraLife: '♥', fusionParity: '⊕', fusionCrc: '⬡', fusionHamming: '✳' }
       upgradePanel.innerHTML = `<header class="upgrade-heading"><span>OLEADA ${this.wave} COMPLETADA</span><h2>Elige una mejora</h2></header><div class="upgrade-cards">${choices.map((choice, index) => `<button class="upgrade-card rarity-${choice.rarity === 'épica' ? 'epic' : choice.rarity === 'rara' ? 'rare' : 'common'}" data-upgrade-index="${index}" aria-label="Opción ${index + 1}: ${choice.name}, ${choice.rarity}"><span class="upgrade-key">${index + 1}</span><span class="upgrade-icon-circle"><span class="upgrade-icon">${iconByKey[choice.key] || '✦'}</span></span><strong class="upgrade-name">${choice.name}</strong><span class="upgrade-description">${choice.desc}</span><span class="upgrade-footer"><b class="upgrade-rarity">${choice.rarity.toUpperCase()}</b><small class="upgrade-synergy">${choice.synergy}</small></span></button>`).join('')}</div><p class="upgrade-hint">LEVANTA LA MANO IZQUIERDA / DERECHA / AMBAS <span>·</span> O PULSA <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></p>`
       upgradePanel.hidden = false
       upgradePanel.querySelectorAll('[data-upgrade-index]').forEach((button) => button.addEventListener('click', () => this.chooseUpgrade(Number(button.dataset.upgradeIndex))))
@@ -1341,17 +1359,36 @@ if (!window.Phaser) {
       this.aimGraphics?.clear().setVisible(true)
       if (choice.key === 'extraLife') this.lives++
       this.wave++; this.mode = 'playing'; this.beginWave()
+      if (choice.key.startsWith('fusion')) this.playBallFusion(choice.key)
+    }
+
+    playBallFusion(upgradeKey) {
+      const type = upgradeKey.slice('fusion'.length).toLowerCase()
+      const level = this.upgrades[upgradeKey]
+      const label = ({ parity: 'PARIDAD', crc: 'CRC', hamming: 'HAMMING' })[type] || type.toUpperCase()
+      const color = TYPE[type].color
+      const x = this.player.x
+      const y = this.player.y - 24
+      const first = this.add.circle(x - 30, y, 9, color, 1).setStrokeStyle(2, COLORS.white, 1).setDepth(32)
+      const second = this.add.circle(x + 30, y, 9, color, 1).setStrokeStyle(2, COLORS.white, 1).setDepth(32)
+      const ring = this.add.circle(x, y, 17, color, 0).setStrokeStyle(3, color, 1).setDepth(32)
+      this.tweens.add({ targets: [first, second], x, y, scale: 0.2, duration: 380, ease: 'Cubic.In', onComplete: () => { first.destroy(); second.destroy() } })
+      this.tweens.add({ targets: ring, scale: 3.4, alpha: 0, duration: 520, onComplete: () => ring.destroy() })
+      if (!this.reducedMotion) this.tweens.add({ targets: this.actor, scale: 1.22, duration: 150, yoyo: true, onComplete: () => this.actor?.setScale(1) })
+      this.cameras.main.flash(180, (color >> 16) & 255, (color >> 8) & 255, color & 255, false)
+      this.selectBall(type)
+      this.showToast(`FUSIÓN COMPLETADA · ${label}${'+'.repeat(Math.min(2, level))}`)
     }
 
     pause() {
       this.fadeTransition(() => {
         this.mode = 'paused'
         pausePanel.querySelector('[data-pause-action="calibrate"]').disabled = !window.poseControl?.active
-        pausePanel.hidden = false
+        setPausePanelVisible(pausePanel, true)
       })
     }
 
-    resume() { this.fadeTransition(() => { pausePanel.hidden = true; this.mode = 'playing' }) }
+    resume() { this.fadeTransition(() => { setPausePanelVisible(pausePanel, false); this.mode = 'playing' }) }
 
     returnToMenu() {
       if (this.transitioning) return
@@ -1359,6 +1396,7 @@ if (!window.Phaser) {
         pausePanel.hidden = true; tutorialPanel.hidden = true; this.mode = 'title'; document.querySelector('.shell').classList.remove('in-run')
         this.actor?.destroy(); this.hud?.destroy(); this.aimGraphics?.destroy(); this.bossHud?.destroy(); this.bossAttackGraphics?.destroy()
         this.blocks?.forEach((block) => block.container.destroy()); this.shots?.forEach((shot) => { shot.dot?.destroy(); shot.aura?.destroy(); shot.sprite?.destroy() })
+        this.powerUps?.forEach((powerUp) => powerUp.container.destroy()); this.powerUps = []
         this.blocks = []; this.shots = []; this.boss = null; this.clearResults(); this.renderTitle(); mainMenu.hidden = false; loadoutPanel.classList.add('is-hidden')
       })
     }
@@ -1379,17 +1417,21 @@ if (!window.Phaser) {
 
     showResults(won) {
       this.mode = 'results'
+      this.powerUps?.forEach((powerUp) => powerUp.container.destroy())
+      this.powerUps = []
+      this.activePowerUps = { shieldMs: 0, slowMs: 0 }
+      this.updatePowerUpHud()
       this.playAudio(won ? 'victoria' : 'derrota')
       this.resultWon = won
-      const berData = calculateBer({ bitErrors: this.bitErrors, framesGenerated: this.metrics.created, bitsPerFrame: 8 })
+      const berData = calculateBer({ bitErrors: this.bitErrors, residualBitErrors: this.metrics.lost, framesGenerated: this.metrics.created, bitsPerFrame: 8 })
       const { correctionRate } = calculateRunRates({ corrected: this.metrics.corrected, bitErrors: this.bitErrors, totalBits: berData.totalBits })
       const corruptGenerated = this.metrics.corruptCreated
       const detected = Math.min(this.metrics.detected, corruptGenerated)
       const detectedRate = corruptGenerated ? Number((detected / corruptGenerated * 100).toFixed(2)) : 0
       const durationSeconds = Math.max(0, Math.round((performance.now() - this.runStartedAt) / 1000))
-      const duration = `${Math.floor(durationSeconds / 60)}:${String(durationSeconds % 60).padStart(2, '0')}`
+      const duration = formatRunDuration(durationSeconds)
       const hasHamming = this.equippedBalls.includes('hamming')
-      this.resultSummary = { initials: '', score: this.score, wave: this.wave, durationSeconds, won, equippedBalls: [...this.equippedBalls], metrics: { ...this.metrics, detected }, detected, corrected: this.metrics.corrected, lost: this.metrics.lost, detectedRate, correctionRate: hasHamming ? Number(correctionRate.toFixed(2)) : null, bitErrors: berData.bitErrors, framesGenerated: berData.framesGenerated, bitsPerFrame: berData.bitsPerFrame, totalBits: berData.totalBits, ber: berData.ber, waveMetrics: this.waveMetrics.map((entry) => ({ ...entry, detected: Math.min(entry.detected, entry.corruptCreated) })), date: new Date().toISOString() }
+      this.resultSummary = { initials: '', score: this.score, wave: this.wave, durationSeconds, won, equippedBalls: [...this.equippedBalls], metrics: { ...this.metrics, detected }, detected, corrected: this.metrics.corrected, lost: this.metrics.lost, detectedRate, correctionRate: hasHamming ? Number(correctionRate.toFixed(2)) : null, bitErrors: berData.bitErrors, residualBitErrors: berData.residualBitErrors, framesGenerated: berData.framesGenerated, bitsPerFrame: berData.bitsPerFrame, totalBits: berData.totalBits, ber: berData.ber, residualBer: berData.residualBer, waveMetrics: this.waveMetrics.map((entry) => ({ ...entry, detected: Math.min(entry.detected, entry.corruptCreated) })), date: new Date().toISOString() }
       const chartMaximum = Math.max(1, ...this.waveMetrics.flatMap((entry) => [entry.processed, entry.detected, entry.corrected, entry.lost]))
       const series = [['procesadas', 'processed', '#18e6e1'], ['detectadas', 'detected', '#ff416d'], ['corregidas', 'corrected', '#6bff9f'], ['perdidas', 'lost', '#ffcb57']]
       const chart = this.waveMetrics.map((entry) => `<div class="chart-wave"><b>OLEADA ${entry.wave}</b><div class="chart-series">${series.map(([label, key, color]) => { const value = entry[key] || 0; return `<div class="chart-bar-line"><span>${label}</span><div class="chart-track"><i style="width:${Math.min(100, value / chartMaximum * 100)}%;background:${color}"></i></div><b>${value}</b></div>` }).join('')}</div></div>`).join('')
@@ -1399,28 +1441,29 @@ if (!window.Phaser) {
           <article><small>PROCESADAS</small><b>${this.metrics.processed}</b><span>Tramas retiradas del campo.</span></article>
           <article><small>DETECTADAS</small><b>${detected} / ${corruptGenerated}</b><span>Corruptas destruidas / corruptas generadas.</span></article>
           <article><small>PERDIDAS</small><b>${this.metrics.lost}</b><span>Corruptas que alcanzaron el nodo.</span></article>
-          <article><small>% DETECTADO</small><b>${detectedRate.toFixed(2)}%</b><span>Detectadas ÷ ${corruptGenerated} corruptas generadas.</span></article>
-          <article><small>% CORREGIDO</small><b>${hasHamming ? `${correctionRate.toFixed(2)}%` : 'n/a (sin Hamming)'}</b><span>${hasHamming ? 'Errores corregidos ÷ errores generados.' : 'Hamming no estaba equipado.'}</span></article>
-          <article><small>BER</small><b>${berData.ber.toFixed(2)}%</b><span>${berData.framesGenerated} tramas × ${berData.bitsPerFrame} bits = ${berData.totalBits} bits generados.</span></article>
+          <article><small>% DETECTADO</small><b>${detectedRate.toFixed(2)}%</b><span>Tramas corruptas detectadas y destruidas ÷ ${corruptGenerated} corruptas generadas.</span></article>
+          <article><small>% CORREGIDO</small><b>${hasHamming ? `${correctionRate.toFixed(2)}%` : '0.00% (sin Hamming)'}</b><span>Bits corregidos por Hamming ÷ ${berData.bitErrors} bits erróneos generados.</span></article>
+          <article><small>BER BRUTO</small><b>${berData.ber.toFixed(2)}%</b><span>${berData.bitErrors} bits erróneos generados ÷ ${berData.totalBits} bits transmitidos.</span></article>
+          <article><small>BER RESIDUAL</small><b>${berData.residualBer.toFixed(2)}%</b><span>${berData.residualBitErrors} bits erróneos que llegaron sin detectar ÷ ${berData.totalBits} bits transmitidos.</span></article>
           <article><small>DISPAROS A SANAS</small><b>${this.metrics.misfires}</b><span>Impactos en tramas íntegras.</span></article>
         </section>
         <section class="results-grid">
           <article class="wave-results"><h3>RENDIMIENTO POR OLEADA</h3><div class="wave-chart">${chart}</div></article>
-          <article class="link-results"><h3>CAPA DE ENLACE</h3><p><b>Paridad:</b> detecta errores en una cantidad impar de bits.</p><p><b>CRC:</b> detecta alteraciones mediante un código polinómico.</p><p><b>Hamming:</b> localiza y corrige errores de un bit.</p><p class="metrics-note">BER = ${berData.bitErrors} bits erróneos ÷ (${berData.framesGenerated} tramas × ${berData.bitsPerFrame} bits) = ${berData.bitErrors} ÷ ${berData.totalBits} = ${berData.ber.toFixed(2)}%.</p></article>
+          <article class="link-results"><h3>CAPA DE ENLACE</h3><p>Paridad y CRC detectan las tramas corruptas y las destruyen; Hamming corrige el bit erróneo para recuperar la trama.</p><p><b>BER bruto</b> = bits erróneos generados ÷ bits transmitidos = ${berData.bitErrors} ÷ (${berData.framesGenerated} × ${berData.bitsPerFrame}) = ${berData.bitErrors} ÷ ${berData.totalBits} = ${berData.ber.toFixed(2)}%.</p><p class="metrics-note"><b>BER residual</b> = bits erróneos de tramas que llegaron al nodo sin detectar ÷ bits transmitidos = ${berData.residualBitErrors} ÷ ${berData.totalBits} = ${berData.residualBer.toFixed(2)}%.</p><p><b>% detectado</b> mide tramas corruptas detectadas/destruidas ÷ tramas corruptas generadas; <b>% corregido</b> mide bits corregidos por Hamming ÷ bits erróneos generados. Son resultados distintos de los métodos.</p></article>
         </section>
-        <section class="results-save-area"><label class="score-entry">INICIALES <input id="result-initials" maxlength="3" placeholder="ABC" aria-label="Iniciales para guardar el puntaje"><button id="save-score" disabled>GUARDAR</button><button id="export-result">EXPORTAR JSON</button><span id="save-confirmation" role="status" aria-live="polite"></span></label><div class="leaderboard"><h3>MEJORES PUNTAJES</h3><div id="results-leaderboard">${renderLeaderboard(3)}</div></div></section>
+        <section class="results-save-area"><label class="score-entry">INICIALES <input id="result-initials" maxlength="5" pattern="[A-Za-z0-9]{3,5}" placeholder="ABC" aria-label="Iniciales para guardar el puntaje"><button id="save-score" disabled>GUARDAR</button><button id="export-result">EXPORTAR JSON</button><span id="save-confirmation" role="status" aria-live="polite"></span></label><div class="leaderboard"><h3>MEJORES PUNTAJES</h3><div id="results-leaderboard">${renderLeaderboard(3)}</div></div></section>
         <footer class="results-actions"><button id="results-menu">MENÚ</button><button id="results-retry">NUEVA PARTIDA</button></footer>`
       resultsPanel.hidden = false
     }
 
     saveToStorage() {
       try {
-        const scores = JSON.parse(localStorage.getItem('tramas-y-bloques-scores') || '[]')
+        const scores = readValidatedStorage(getLocalStorage(), 'tramas-y-bloques-scores', validateScores, [])
         const existing = scores.findIndex((entry) => entry.date === this.resultSummary.date)
         if (existing >= 0) scores[existing] = this.resultSummary
         else scores.unshift(this.resultSummary)
         scores.sort((a, b) => b.score - a.score)
-        localStorage.setItem('tramas-y-bloques-scores', JSON.stringify(scores.slice(0, 20), null, 2))
+        getLocalStorage()?.setItem('tramas-y-bloques-scores', JSON.stringify(validateScores(scores).slice(0, 20), null, 2))
       } catch (error) { console.warn('No fue posible guardar el resultado localmente.', error) }
     }
 
@@ -1432,7 +1475,8 @@ if (!window.Phaser) {
       if (!this.resultSummary) return
       const saveButton = document.querySelector('#save-score')
       if (!exportJson && saveButton?.disabled) return
-      this.resultSummary.initials = (document.querySelector('#result-initials')?.value || '---').toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 3) || '---'
+      this.resultSummary.initials = (document.querySelector('#result-initials')?.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)
+      if (!exportJson && !/^[A-Z0-9]{3,5}$/.test(this.resultSummary.initials)) return
       this.saveToStorage()
       document.querySelector('#results-leaderboard').innerHTML = renderLeaderboard(3)
       if (!exportJson) {
@@ -1442,9 +1486,10 @@ if (!window.Phaser) {
         document.querySelector('#save-confirmation').textContent = 'Puntaje guardado'
       }
       if (!exportJson) return
-      const blob = new Blob([JSON.stringify(this.resultSummary, null, 2)], { type: 'application/json' })
+      const validatedSummary = validateRunSummary(this.resultSummary)
+      const blob = new Blob([JSON.stringify(validatedSummary, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
-      const link = document.createElement('a'); link.href = url; link.download = `tramas-${this.resultSummary.initials}-${this.score}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+      const link = document.createElement('a'); link.href = url; link.download = `tramas-${validatedSummary.initials}-${validatedSummary.score}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
       document.querySelector('#export-result').textContent = 'JSON DESCARGADO'
     }
   }
@@ -1517,7 +1562,7 @@ if (!window.Phaser) {
         if (state.ready) state.stop(`Falló MediaPipe: ${detail.slice(0, 100)}`)
         else rejectReady(new Error(detail))
       }
-      worker.postMessage({ type: 'init', bundleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.cjs', wasmUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm', poseModelUrl: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task', handModelUrl: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' })
+      worker.postMessage({ type: 'init', bundleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.cjs', bundleIntegrity: 'sha384-dHaqD2388KYCyIjcr+MrZnLDvl2VqJjY5CwPfFTg0WawRzY1WriqaqgclsZXmKZ4', wasmUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm', poseModelUrl: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task', handModelUrl: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' })
       await ready
       state.ready = true
       cameraButton.disabled = false; cameraButton.innerHTML = '<span>◉</span> DESACTIVAR CÁMARA'; recalibrateButton.disabled = false

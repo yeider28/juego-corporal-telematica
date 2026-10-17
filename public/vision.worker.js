@@ -8,7 +8,7 @@ let frameCount = 0
 self.onmessage = async ({ data }) => {
   try {
     if (data.type === 'init') {
-      const response = await fetch(data.bundleUrl)
+      const response = await fetch(data.bundleUrl, { integrity: data.bundleIntegrity })
       if (!response.ok) throw new Error(`No se pudo descargar MediaPipe (${response.status}).`)
       const module = { exports: {} }
       new Function('exports', 'module', await response.text())(module.exports, module)

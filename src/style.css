@@ -137,7 +137,7 @@ kbd{display:inline-flex;min-width:19px;height:19px;align-items:center;justify-co
 @media(max-height:780px) and (min-width:761px){.results-panel{gap:5px;padding-top:8px}.results-header h2{font-size:22px}.results-metrics article{padding:3px 6px}.results-grid article{padding:4px 7px}.chart-series{gap:1px}.results-save-area{padding:3px 7px}}
 @media(max-width:760px){.game-layout{grid-template-columns:minmax(0,1fr)}.side-panel{max-width:none}.results-panel{grid-template-rows:auto auto minmax(0,1fr) auto auto;padding:8px 10px 54px}.results-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.results-grid{grid-template-columns:minmax(0,1fr);overflow:auto}.wave-chart{grid-template-columns:repeat(2,minmax(0,1fr))}.results-save-area{grid-template-columns:1fr}.leaderboard{grid-template-columns:1fr}.results-panel .results-actions button{min-width:100px}}
 @media(min-width:1600px){.shell{max-width:1800px}.game-layout{grid-template-columns:minmax(0,1fr) minmax(250px,280px);gap:38px}.game-frame{max-height:calc(100dvh - 185px)}}
-.results-panel{overflow-x:hidden;overflow-y:auto}
+.results-panel{overflow-x:hidden;overflow-y:hidden}
 @media(max-width:760px){.results-grid{overflow:visible}}
 
 /* Ajustes finales del loadout y estados de selección. */
