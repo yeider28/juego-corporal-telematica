@@ -9,6 +9,8 @@ import { createObjectPool } from './entidades/object-pool.js'
 import { createGlobalKeyBinding } from './sistemas/global-keys.js'
 import { audioControlsState } from './sistemas/audio-controls.js'
 import { completeTutorial, readTutorialSeen } from './sistemas/tutorial-state.js'
+import { clearGameStorage } from './sistemas/game-storage.js'
+import { GAME_VERSION } from './config/version.js'
 
 const app = document.querySelector('#app')
 app.innerHTML = `
@@ -50,7 +52,7 @@ app.innerHTML = `
         <div class="camera-view" id="camera-view"><video id="camera-preview" autoplay playsinline muted></video><canvas id="pose-skeleton" aria-label="Esqueleto detectado por la cámara"></canvas><div id="camera-calibration" class="camera-calibration" hidden><div class="calibration-guide"><span>COLOCA CABEZA Y HOMBROS AQUÍ</span><b id="calibration-countdown">3</b></div></div><span id="gesture-state" class="gesture-state">GESTO: —</span></div>
         </details>
         <details class="method-section"><summary>MÉTODO ACTIVO · <span id="method-summary-status">PARIDAD</span></summary><div id="method-state">En partida, pulsa 1 o 2 para cambiar.</div></details>
-        <details class="accessibility-panel"><summary>ACCESIBILIDAD Y GESTOS</summary><small id="motion-preference-note" class="motion-preference-note" hidden>Tu sistema prefiere movimiento reducido. Se activó esta opción; puedes cambiarla aquí.</small><label>Suavizado <select id="setting-smoothing"><option value="0.82">Rápido</option><option value="0.58" selected>Equilibrado</option><option value="0.34">Suave</option></select></label><label>Zona muerta <input id="setting-deadzone" type="range" min="0.005" max="0.04" step="0.001" value="0.012"><output id="deadzone-value">0.012</output></label><label>Umbral temporal <input id="setting-temporal" type="range" min="80" max="500" step="20" value="140"><output id="temporal-value">140 ms</output></label><label><input id="setting-reduced-motion" type="checkbox"> Reducir movimiento (sin shake ni flashes)</label><label>Paleta <select id="setting-palette"><option value="default">Cian / rojo (predeterminada)</option><option value="contrast">Alto contraste</option><option value="blue-yellow">Azul / amarillo</option></select></label><label>Tamaño de texto <input id="setting-text-size" type="range" min="90" max="125" step="5" value="100"><output id="text-size-value">100%</output></label><label>Volumen <input id="setting-volume" type="range" min="0" max="100" step="5" value="70"><output id="volume-value">70%</output></label><button id="mute-toggle" class="mute-toggle" aria-pressed="false">SILENCIAR (M)</button><button id="replay-tutorial" class="mute-toggle">VER TUTORIAL DE NUEVO</button><small>El audio se habilita tras una interacción con la página, según la política de autoplay del navegador.</small><button id="settings-back" class="settings-back" hidden>VOLVER</button><small>Teclado y ratón siguen disponibles si la cámara se pierde o se deniega.</small></details>
+        <details class="accessibility-panel"><summary>ACCESIBILIDAD Y GESTOS</summary><small id="motion-preference-note" class="motion-preference-note" hidden>Tu sistema prefiere movimiento reducido. Se activó esta opción; puedes cambiarla aquí.</small><label>Suavizado <select id="setting-smoothing"><option value="0.82">Rápido</option><option value="0.58" selected>Equilibrado</option><option value="0.34">Suave</option></select></label><label>Zona muerta <input id="setting-deadzone" type="range" min="0.005" max="0.04" step="0.001" value="0.012"><output id="deadzone-value">0.012</output></label><label>Umbral temporal <input id="setting-temporal" type="range" min="80" max="500" step="20" value="140"><output id="temporal-value">140 ms</output></label><label><input id="setting-reduced-motion" type="checkbox"> Reducir movimiento (sin shake ni flashes)</label><label>Paleta <select id="setting-palette"><option value="default">Cian / rojo (predeterminada)</option><option value="contrast">Alto contraste</option><option value="blue-yellow">Azul / amarillo</option></select></label><label>Tamaño de texto <input id="setting-text-size" type="range" min="90" max="125" step="5" value="100"><output id="text-size-value">100%</output></label><label>Volumen <input id="setting-volume" type="range" min="0" max="100" step="5" value="70"><output id="volume-value">70%</output></label><button id="mute-toggle" class="mute-toggle" aria-pressed="false">SILENCIAR (M)</button><button id="replay-tutorial" class="mute-toggle">VER TUTORIAL DE NUEVO</button><button id="reset-settings" class="reset-settings">RESTABLECER AJUSTES</button><small id="reset-settings-status" role="status" aria-live="polite"></small><small>El audio se habilita tras una interacción con la página, según la política de autoplay del navegador.</small><button id="settings-back" class="settings-back" hidden>VOLVER</button><small>Teclado y ratón siguen disponibles si la cámara se pierde o se deniega.</small></details>
         <section id="gesture-debug" class="gesture-debug" hidden aria-live="polite">
           <div class="debug-heading"><b>PRUEBA DE GESTOS</b><span>TECLA D PARA CERRAR</span></div>
           <div class="debug-readings"><span id="debug-pose">POSE: SIN DATOS</span><span id="debug-values">Hombros — · Apunte — · Giro muñeca —</span></div>
@@ -63,7 +65,7 @@ app.innerHTML = `
       </aside>
     </section>
     <section class="results-panel" id="results-panel" hidden aria-label="Resultados de la partida"></section>
-    <footer class="footer"><span>TELEMÁTICA // CAPA DE ENLACE</span><span>CHROME / EDGE 115+</span></footer>
+    <footer class="footer"><span>TELEMÁTICA // CAPA DE ENLACE</span><span>CHROME / EDGE 115+ <b id="game-version">${GAME_VERSION}</b></span></footer>
   </main>`
 
 const cameraButton = document.querySelector('#camera-button')
@@ -101,7 +103,8 @@ let returnFromOptions = 'menu'
 const loadoutSelection = { balls: ['parity', 'hamming'], perk: 'rapid', difficulty: 'normal' }
 
 const ACCESSIBILITY_KEY = 'tramas-accessibility-v1'
-const accessibility = { smoothing: 0.58, deadZone: 0.012, temporalMs: 140, reducedMotion: false, palette: 'default', textSize: 100, volume: 70, muted: false }
+const ACCESSIBILITY_DEFAULTS = Object.freeze({ smoothing: 0.58, deadZone: 0.012, temporalMs: 140, reducedMotion: false, palette: 'default', textSize: 100, volume: 70, muted: false })
+const accessibility = { ...ACCESSIBILITY_DEFAULTS }
 try { Object.assign(accessibility, JSON.parse(localStorage.getItem(ACCESSIBILITY_KEY) || '{}')) } catch {}
 let reducedMotionWasDetected = false
 try {
@@ -140,6 +143,23 @@ function applyAccessibility() {
   if (scene) { scene.setReducedMotion?.(accessibility.reducedMotion); scene.syncFallbackAudioVolume?.(); scene.updateAudioStatus?.() }
 }
 function saveAccessibility() { try { localStorage.setItem(ACCESSIBILITY_KEY, JSON.stringify(accessibility)) } catch {}; applyAccessibility() }
+function resetGameSettings() {
+  clearGameStorage(localStorage)
+  Object.assign(accessibility, ACCESSIBILITY_DEFAULTS)
+  reducedMotionWasDetected = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+  if (reducedMotionWasDetected) accessibility.reducedMotion = true
+  for (const key of Object.keys(gestureTrials)) {
+    gestureTrials[key].success = 0
+    gestureTrials[key].failure = 0
+    gestureTrials[key].falsePositive = 0
+  }
+  renderGestureTrials()
+  applyAccessibility()
+  if (window.poseControl?.translator) window.poseControl.translator.configure({ smoothingAlpha: accessibility.smoothing, moveDeadZone: accessibility.deadZone })
+  const scene = window.gameInstance?.scene?.getScene?.('flow')
+  if (scene) { scene.screenShakeEnabled = true; scene.updateShakeIndicator?.() }
+  document.querySelector('#reset-settings-status').textContent = 'Ajustes restablecidos. Se borraron los datos guardados del juego.'
+}
 function resumeAudioFromUserGesture() {
   const sound = window.gameInstance?.sound
   if (!sound) return
@@ -164,6 +184,7 @@ document.querySelector('#replay-tutorial').addEventListener('click', () => {
   document.querySelector('#settings-back').hidden = true
   window.gameInstance?.scene?.getScene('flow')?.openTutorialPreview(returnFromOptions === 'pause' ? 'pause-options' : 'options')
 })
+document.querySelector('#reset-settings').addEventListener('click', resetGameSettings)
 document.querySelector('#settings-back').addEventListener('click', () => { document.querySelector('.accessibility-panel').open = false; document.querySelector('#settings-back').hidden = true; if (returnFromOptions === 'pause') pausePanel.hidden = false; else mainMenu.hidden = false })
 document.querySelector('#loadout-back').addEventListener('click', () => { loadoutPanel.classList.add('is-hidden'); mainMenu.hidden = false; document.querySelector('.shell').classList.remove('in-run') })
 document.querySelectorAll('[data-menu-action]').forEach((button) => button.addEventListener('click', () => {

@@ -9,11 +9,7 @@ export function readTutorialSeen(storage) {
   const current = storage.getItem(TUTORIAL_SEEN_KEY)
   if (current !== null) return hasSeenTutorial(current)
   const legacy = storage.getItem(LEGACY_TUTORIAL_KEY)
-  if (hasSeenTutorial(legacy)) {
-    storage.setItem(TUTORIAL_SEEN_KEY, 'true')
-    return true
-  }
-  return false
+  return hasSeenTutorial(legacy)
 }
 
 export function completeTutorial(storage, action) {

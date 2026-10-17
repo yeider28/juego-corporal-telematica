@@ -3,12 +3,16 @@ import assert from 'node:assert/strict'
 import { audioControlsState } from '../src/sistemas/audio-controls.js'
 import { createGlobalKeyBinding, dispatchGlobalKey } from '../src/sistemas/global-keys.js'
 import { completeTutorial, readTutorialSeen, shouldShowTutorial, TUTORIAL_SEEN_KEY } from '../src/sistemas/tutorial-state.js'
+import { clearGameStorage } from '../src/sistemas/game-storage.js'
 
 function memoryStorage(initial = {}) {
   const values = new Map(Object.entries(initial))
   return {
     getItem(key) { return values.has(key) ? values.get(key) : null },
     setItem(key, value) { values.set(key, String(value)) },
+    removeItem(key) { values.delete(key) },
+    key(index) { return [...values.keys()][index] ?? null },
+    get length() { return values.size },
   }
 }
 
@@ -76,6 +80,8 @@ test('tutorial aparece si falta la bandera o está corrupta; se oculta al comple
   assert.equal(readTutorialSeen(storage), false)
   assert.equal(shouldShowTutorial(storage.getItem(TUTORIAL_SEEN_KEY)), true)
   assert.equal(storage.getItem(TUTORIAL_SEEN_KEY), null, 'mostrarlo no debe persistir la bandera')
+  assert.equal(completeTutorial(storage, 'shown'), false, 'mostrarlo no cuenta como completar ni saltar')
+  assert.equal(storage.getItem(TUTORIAL_SEEN_KEY), null)
   storage.setItem(TUTORIAL_SEEN_KEY, 'dato corrupto')
   assert.equal(readTutorialSeen(storage), false)
   assert.equal(shouldShowTutorial(storage.getItem(TUTORIAL_SEEN_KEY)), true)
@@ -85,4 +91,26 @@ test('tutorial aparece si falta la bandera o está corrupta; se oculta al comple
   storage.setItem(TUTORIAL_SEEN_KEY, 'false')
   assert.equal(completeTutorial(storage, 'skip'), true)
   assert.equal(readTutorialSeen(storage), true)
+})
+
+test('leer la bandera histórica no escribe tutorialVisto', () => {
+  const storage = memoryStorage({ 'tramas-tutorial-complete': 'true' })
+  assert.equal(readTutorialSeen(storage), true)
+  assert.equal(storage.getItem(TUTORIAL_SEEN_KEY), null)
+})
+
+test('restablecer elimina todas las claves del juego y conserva las de otros sitios', () => {
+  const storage = memoryStorage({
+    'tramas-accessibility-v1': '{}',
+    'tramas-screen-shake': 'false',
+    'tramas-y-bloques-scores': '[]',
+    tutorialVisto: 'true',
+    unrelated: 'keep',
+  })
+  clearGameStorage(storage)
+  assert.equal(storage.getItem('tramas-accessibility-v1'), null)
+  assert.equal(storage.getItem('tramas-screen-shake'), null)
+  assert.equal(storage.getItem('tramas-y-bloques-scores'), null)
+  assert.equal(storage.getItem(TUTORIAL_SEEN_KEY), null)
+  assert.equal(storage.getItem('unrelated'), 'keep')
 })
