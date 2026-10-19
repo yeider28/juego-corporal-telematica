@@ -4,6 +4,7 @@ import { corruptFrameScore, isFinalWave, isWaveComplete, penalizeScore, resolveL
 import { congestionState } from '../src/sistemas/congestion.js'
 import { collisionOverlapsAabb } from '../src/sistemas/colisiones.js'
 import { bossPhaseForHealth } from '../src/sistemas/jefe.js'
+import { comboScoreMultiplier } from '../src/sistemas/combo.js'
 
 test('las vidas respetan invulnerabilidad, escudo y pérdida con causa conservada', () => {
   assert.deepEqual(resolveLifeLoss({ lives: 5, invulnMs: 1, shield: 1, cause: 'healthy' }), { lost: false, lives: 5, invulnMs: 1, shield: 1, cause: 'healthy' })
@@ -37,7 +38,18 @@ test('colisiones conservan el límite estricto y el jefe cambia de fase por salu
   const block = { x: 10, y: 10, w: 20, h: 20 }
   assert.equal(collisionOverlapsAabb(19, 10, 1, block), true)
   assert.equal(collisionOverlapsAabb(21, 10, 1, block), false)
+  assert.equal(collisionOverlapsAabb(21, 21, 1, block), false, 'las esquinas usan la misma caja AABB estricta que el combate')
+  assert.equal(collisionOverlapsAabb(20.99, 20.99, 1, block), true)
   assert.equal(bossPhaseForHealth(9, 12), 1)
   assert.equal(bossPhaseForHealth(8, 12), 2)
   assert.equal(bossPhaseForHealth(4, 12), 3)
+})
+
+test('el multiplicador de ráfaga sube por umbrales exactos y respeta el tope', () => {
+  assert.equal(comboScoreMultiplier(0), 1)
+  assert.equal(comboScoreMultiplier(2), 1)
+  assert.equal(comboScoreMultiplier(3), 1.25)
+  assert.equal(comboScoreMultiplier(5), 1.25)
+  assert.equal(comboScoreMultiplier(6), 1.5)
+  assert.equal(comboScoreMultiplier(100), 3)
 })

@@ -13,7 +13,7 @@ const boundedRate = (value) => Number.isFinite(value) ? Math.min(100, Math.max(0
 const initials = (value) => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, LIMITS.maxInitials)
 const dateOrEmpty = (value) => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value.slice(0, 32) : ''
 
-export const DEFAULT_ACCESSIBILITY = Object.freeze({ smoothing: 0.58, deadZone: 0.012, temporalMs: 140, reducedMotion: false, palette: 'default', textSize: 100, volume: 70, muted: false })
+export const DEFAULT_ACCESSIBILITY = Object.freeze({ smoothing: 0.58, deadZone: 0.012, temporalMs: 140, reducedMotion: false, crt: false, palette: 'default', textSize: 100, volume: 70, muted: false })
 
 export function validateAccessibility(value) {
   if (!isRecord(value)) return { ...DEFAULT_ACCESSIBILITY }
@@ -22,6 +22,7 @@ export function validateAccessibility(value) {
     deadZone: clampNumber(value.deadZone, 0.005, 0.04, DEFAULT_ACCESSIBILITY.deadZone),
     temporalMs: Math.round(clampNumber(value.temporalMs, 80, 500, DEFAULT_ACCESSIBILITY.temporalMs) / 20) * 20,
     reducedMotion: typeof value.reducedMotion === 'boolean' ? value.reducedMotion : false,
+    crt: typeof value.crt === 'boolean' ? value.crt : false,
     palette: ['default', 'contrast', 'blue-yellow'].includes(value.palette) ? value.palette : 'default',
     textSize: clampNumber(value.textSize, 90, 125, DEFAULT_ACCESSIBILITY.textSize),
     volume: clampNumber(value.volume, 0, 100, DEFAULT_ACCESSIBILITY.volume),

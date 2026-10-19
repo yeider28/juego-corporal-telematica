@@ -26,6 +26,9 @@ export class GestureTranslator {
 
   reset() {
     this.lastCenterX = null
+    this.lastRawCenterX = null
+    this.centerNoise = 0
+    this.centerMoving = false
     this.smoothedCenterX = null
     this.lastPlayerX = null
     this.lastAim = -Math.PI / 2
@@ -46,9 +49,17 @@ export class GestureTranslator {
     }
 
     const rawCenterX = (shoulderL.x + shoulderR.x) / 2
+    const rawStep = this.lastRawCenterX === null ? 0 : Math.abs(rawCenterX - this.lastRawCenterX)
+    const configuredDeadZone = this.thresholds.moveDeadZone
+    if (rawStep <= configuredDeadZone * 1.5) this.centerNoise += (rawStep - this.centerNoise) * 0.12
+    else this.centerNoise *= 0.94
+    this.lastRawCenterX = rawCenterX
     const centerX = this.smoothedCenterX === null ? rawCenterX : this.smoothedCenterX + (rawCenterX - this.smoothedCenterX) * this.smoothingAlpha
     this.smoothedCenterX = centerX
-    const moved = this.lastCenterX === null || Math.abs(centerX - this.lastCenterX) >= this.thresholds.moveDeadZone
+    const adaptiveDeadZone = Math.max(configuredDeadZone, Math.min(configuredDeadZone * 2.5, this.centerNoise * 2.4))
+    const centerDelta = this.lastCenterX === null ? Infinity : Math.abs(centerX - this.lastCenterX)
+    const moved = this.lastCenterX === null || (this.centerMoving ? centerDelta >= adaptiveDeadZone * 0.55 : centerDelta >= adaptiveDeadZone)
+    this.centerMoving = moved
     if (moved) {
       this.lastCenterX = centerX
       this.lastPlayerX = gameWidth * (1 - centerX)

@@ -34,12 +34,19 @@ self.onmessage = async ({ data }) => {
 
     if (data.type === 'frame' && poseLandmarker && handLandmarker) {
       const { bitmap, timestamp } = data
-      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-        canvas.width = bitmap.width
-        canvas.height = bitmap.height
+      if (!bitmap) return
+      try {
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width
+          canvas.height = bitmap.height
+        }
+        context.drawImage(bitmap, 0, 0)
+      } finally {
+        // ImageBitmap fue transferido al worker; cerrarlo en cualquier ruta libera su memoria gráfica.
+        bitmap.close()
       }
-      context.drawImage(bitmap, 0, 0)
-      bitmap.close()
+
+      // La inferencia ocurre íntegramente en este hilo; Phaser solo recibe landmarks compactos.
       const pose = poseLandmarker.detectForVideo(canvas, timestamp)
       // Hand tracking is only needed to detect wrist rotation. Run it every
       // other frame, while keeping pose tracking responsive on every frame.

@@ -52,3 +52,8 @@ export function calculateBer({ bitErrors, residualBitErrors = 0, framesGenerated
     residualBer: totalBits ? Number((residualErrors / totalBits * 100).toFixed(2)) : 0,
   }
 }
+
+// El modelo genera exactamente un bit erróneo por cada trama corrupta.
+export function calculateLedgerBer(totals, bitsPerFrame = 8) {
+  return calculateBer({ bitErrors: totals?.corruptCreated, framesGenerated: totals?.created, bitsPerFrame })
+}

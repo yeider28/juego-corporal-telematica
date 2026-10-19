@@ -30,7 +30,7 @@ Paridad, CRC y Hamming tienen efectos distintos. Mejoras de disparo y las fusion
 
 La lista de sprites opcionales está en `src/sistemas/sprites.js`: `protagonista_quieto.png`, `trama_sana_bajando.png`, `trama_corrupta_error.png`, `jefe_masivo.png`, `proyectiles_tipos.png`, `fondo_lejano.png`, `fondo_parallax.png`, `fondo_cercano.png`, `tileset_circuitos.png` y `ui_elementos.png`. El preload verifica disponibilidad; al faltar un archivo, usa primitivas dibujadas. `public/assets/sonidos/` ya contiene los efectos y la música; no se requiere un archivo de instrucciones de audio.
 
-Phaser 3.87.0 y MediaPipe Tasks Vision 0.10.14 están fijados a sus versiones CDN con SRI SHA-384. Los datos de puntajes, accesibilidad y gestos se validan y limitan al leer `localStorage`. Los listeners de puntero de la escena se retiran al cerrarla. Los pools acotan partículas (96) y proyectiles activos (36).
+Phaser 3.87.0 y MediaPipe Tasks Vision 0.10.14 están fijados a sus versiones CDN con SRI SHA-384. Los datos de puntajes, accesibilidad y gestos se validan y limitan al leer `localStorage`. Los listeners de puntero de la escena se retiran al cerrarla. Los pools gráficos se precalientan y acotan: 64 tramas, 36 proyectiles, 128 partículas, 24 bits y 12 pulsos CRC. La cámara transfiere bitmaps de 320×240 a un worker, limita la muestra a 30 FPS y aplica contrapresión de un solo fotograma en vuelo; el límite real de inferencia depende del equipo.
 
 ## Pruebas automatizadas
 

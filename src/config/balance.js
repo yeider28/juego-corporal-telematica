@@ -2,7 +2,7 @@
  * sobre estos valores base para conservar una curva legible y ajustable. */
 export const BALANCE = Object.freeze({
   targetDurationSeconds: 240,
-  player: { lives: 5, moveSpeed: 320, damage: 1, invulnerabilityMs: 900 },
+  player: { lives: 5, moveSpeed: 320, moveAcceleration: 1450, moveDeceleration: 1850, poseFollowSpeed: 3.4, mouseFollowSpeed: 3.9, damage: 1, invulnerabilityMs: 900 },
   combat: { damage: 1, shotSpeed: 420, crcShotSpeed: 390, shotCooldownSeconds: 0.34, minShotCooldownSeconds: 0.11, rapidReductionSeconds: 0.055, spamHeatPerShot: 0.12, spamHeatDecayPerSecond: 0.28, maxHeatCooldownSeconds: 0.8 },
   score: { corruptParity: 60, corruptCrc: 90, healthyPenalty: 50, hammingHealthyPenalty: 25, hammingCorrection: 125, bossHit: 20, bossDefeat: 500, precisionComboThreshold: 3, comboMultiplierStep: 0.25, maxComboMultiplier: 3 },
   buffer: { congestionAt: 5, recoverAt: 2, speedMultiplier: 1.5 },

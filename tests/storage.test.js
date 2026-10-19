@@ -26,3 +26,20 @@ test('lectura local no propaga JSON corrupto ni fallos de almacenamiento', () =>
   assert.deepEqual(readValidatedStorage({ getItem: () => '{' }, 'x', validateScores, []), [])
   assert.deepEqual(readValidatedStorage({ getItem: () => { throw Error() } }, 'x', validateScores, []), [])
 })
+
+test('preferencias de accesibilidad persisten y se revalidan al recargar', () => {
+  const data = new Map()
+  const storage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) }
+  const preferences = { ...DEFAULT_ACCESSIBILITY, volume: 35, muted: true, palette: 'blue-yellow', reducedMotion: true, crt: true, smoothing: 0.82, deadZone: 0.025, temporalMs: 280, textSize: 115 }
+  storage.setItem('accessibility', JSON.stringify(preferences))
+  assert.deepEqual(readValidatedStorage(storage, 'accessibility', validateAccessibility, { ...DEFAULT_ACCESSIBILITY }), preferences)
+  storage.setItem('accessibility', JSON.stringify({ ...preferences, volume: 140, deadZone: -1, temporalMs: 999, palette: 'invalid' }))
+  const restored = readValidatedStorage(storage, 'accessibility', validateAccessibility, { ...DEFAULT_ACCESSIBILITY })
+  assert.equal(restored.volume, 100)
+  assert.equal(restored.deadZone, 0.005)
+  assert.equal(restored.temporalMs, 500)
+  assert.equal(restored.palette, 'default')
+  assert.equal(restored.muted, true)
+  assert.equal(restored.reducedMotion, true)
+  assert.equal(restored.crt, true)
+})

@@ -62,11 +62,14 @@ Los puntajes se guardan en `localStorage` al introducir entre 3 y 5 caracteres a
 
 Los diez sprites definidos en `src/sistemas/sprites.js` son opcionales y se buscan en `public/assets/sprites/`. Se cargan solo si existen; si faltan, Phaser dibuja las formas de respaldo. El favicon está en `public/favicon.svg`.
 
+Los pools de la escena se precalientan al arrancar y tienen límites fijos: 64 tramas, 36 proyectiles, 128 partículas, 24 bits y 12 pulsos CRC. La cámara reduce los fotogramas a 320×240 y limita la inferencia a 30 por segundo. Solo mantiene un fotograma transferido en vuelo; si la inferencia tarda más, omite capturas nuevas para evitar cola y mantener libre el hilo principal de Phaser.
+
 ## Limitaciones conocidas
 
 - No se incluyen los sprites del plan; actualmente se usan las formas de Phaser.
 - El arranque de Phaser y la función de cámara dependen de recursos CDN. SRI comprueba integridad, pero no aporta modo sin conexión.
 - La cámara requiere una cámara funcional, permisos y descarga de MediaPipe/modelos. La simulación automática no sustituye una prueba física de cámara o gamepad.
+- Los 30 FPS son un límite objetivo de muestreo; la velocidad real de inferencia depende del procesador y del navegador. La inferencia corre en un Web Worker para no bloquear el renderizado de Phaser.
 - El rendimiento depende del navegador, el hardware y el uso de cámara.
 
 ## Checklist de prueba manual
