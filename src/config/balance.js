@@ -6,7 +6,7 @@ export const BALANCE = Object.freeze({
   combat: { damage: 1, shotSpeed: 420, crcShotSpeed: 390, shotCooldownSeconds: 0.34, minShotCooldownSeconds: 0.11, rapidReductionSeconds: 0.055, spamHeatPerShot: 0.12, spamHeatDecayPerSecond: 0.28, maxHeatCooldownSeconds: 0.8 },
   score: { corruptParity: 60, corruptCrc: 90, healthyPenalty: 50, hammingHealthyPenalty: 25, hammingCorrection: 125, bossHit: 20, bossDefeat: 500, precisionComboThreshold: 3, comboMultiplierStep: 0.25, maxComboMultiplier: 3 },
   buffer: { congestionAt: 5, recoverAt: 2, speedMultiplier: 1.5 },
-  powerUps: { dropChance: 0.14, fallSpeed: 110, catchRadius: 30, shieldDurationMs: 12000, slowDurationMs: 9000, slowSpeedMultiplier: 0.55 },
+  powerUps: { types: ['shield', 'slow'], maxActive: 4, dropChance: 0.14, fallSpeed: 110, catchRadius: 30, shieldDurationMs: 12000, slowDurationMs: 9000, slowSpeedMultiplier: 0.55 },
   waves: [
     null,
     { count: 18, speed: 42, corruptChance: 0.47, spawnInterval: 1.5, feature: 'Tramas básicas' },

@@ -55,8 +55,8 @@ test('un jugador automático completa una partida de 3–5 minutos en cada dific
   for (const difficulty of ['easy', 'normal', 'hard']) {
     const firstWave = simulateWave(1, BALANCE.difficulty[difficulty])
     const secondWave = simulateWave(2, BALANCE.difficulty[difficulty])
-    assert.ok(firstWave <= 45, `${difficulty}, oleada 1 demasiado lenta: ${firstWave.toFixed(1)} s`)
-    assert.ok(secondWave <= 45, `${difficulty}, oleada 2 demasiado lenta: ${secondWave.toFixed(1)} s`)
+    assert.ok(firstWave >= 30 && firstWave <= 45, `${difficulty}, oleada 1 fuera del ritmo esperado: ${firstWave.toFixed(1)} s`)
+    assert.ok(secondWave >= 30 && secondWave <= 45, `${difficulty}, oleada 2 fuera del ritmo esperado: ${secondWave.toFixed(1)} s`)
     const duration = simulateRun(difficulty)
     assert.ok(duration >= 180 && duration <= 300, `${difficulty}: ${duration.toFixed(1)} s`)
   }

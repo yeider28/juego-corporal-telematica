@@ -42,9 +42,10 @@ test('BER toma numerador y denominador directamente del ledger', () => {
   const ledger = createRunLedger()
   ledger.record('created', 1, 6)
   ledger.record('corruptCreated', 1, 3)
+  ledger.record('lost', 1, 1)
   assert.deepEqual(calculateLedgerBer(ledger.totals), {
-    framesGenerated: 6, bitsPerFrame: 8, bitErrors: 3, residualBitErrors: 0,
-    totalBits: 48, ber: 6.25, residualBer: 0,
+    framesGenerated: 6, bitsPerFrame: 8, bitErrors: 3, residualBitErrors: 1,
+    totalBits: 48, ber: 6.25, residualBer: 2.08,
   })
 })
 

@@ -8,22 +8,34 @@ let frameCount = 0
 self.onmessage = async ({ data }) => {
   try {
     if (data.type === 'init') {
-      const response = await fetch(data.bundleUrl, { integrity: data.bundleIntegrity })
-      if (!response.ok) throw new Error(`No se pudo descargar MediaPipe (${response.status}).`)
+      let response
+      let bundleSource = ''
+      for (const url of [data.localBundleUrl, data.bundleUrl].filter(Boolean)) {
+        try {
+          const isCdn = url === data.bundleUrl
+          response = await fetch(url, isCdn && data.bundleIntegrity ? { integrity: data.bundleIntegrity } : undefined)
+          if (response.ok) { bundleSource = await response.text(); break }
+        } catch {}
+      }
+      if (!bundleSource) throw new Error('No se pudo cargar MediaPipe. Comprueba la conexión o instala la copia local opcional en public/vendor/mediapipe/.')
       const module = { exports: {} }
-      new Function('exports', 'module', await response.text())(module.exports, module)
+      new Function('exports', 'module', bundleSource)(module.exports, module)
       const { FilesetResolver, PoseLandmarker, HandLandmarker } = module.exports
-      const files = await FilesetResolver.forVisionTasks(data.wasmUrl)
-      poseLandmarker = await PoseLandmarker.createFromOptions(files, {
-        runningMode: 'VIDEO', numPoses: 1,
-        minPoseDetectionConfidence: 0.35, minPosePresenceConfidence: 0.35, minTrackingConfidence: 0.35,
-        baseOptions: { modelAssetPath: data.poseModelUrl, delegate: 'CPU' },
-      })
-      handLandmarker = await HandLandmarker.createFromOptions(files, {
-        runningMode: 'VIDEO', numHands: 2,
-        minHandDetectionConfidence: 0.35, minHandPresenceConfidence: 0.35, minTrackingConfidence: 0.35,
-        baseOptions: { modelAssetPath: data.handModelUrl, delegate: 'CPU' },
-      })
+      const poseOptions = { runningMode: 'VIDEO', numPoses: 1, minPoseDetectionConfidence: 0.35, minPosePresenceConfidence: 0.35, minTrackingConfidence: 0.35 }
+      const handOptions = { runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: 0.35, minHandPresenceConfidence: 0.35, minTrackingConfidence: 0.35 }
+      const createLandmarkers = async (wasmUrl, poseModelUrl, handModelUrl) => {
+        const files = await FilesetResolver.forVisionTasks(wasmUrl)
+        const pose = await PoseLandmarker.createFromOptions(files, { ...poseOptions, baseOptions: { modelAssetPath: poseModelUrl, delegate: 'CPU' } })
+        try {
+          const hand = await HandLandmarker.createFromOptions(files, { ...handOptions, baseOptions: { modelAssetPath: handModelUrl, delegate: 'CPU' } })
+          return { pose, hand }
+        } catch (error) { pose.close?.(); throw error }
+      }
+      let landmarkers
+      try { landmarkers = await createLandmarkers(data.localWasmUrl, data.localPoseModelUrl, data.localHandModelUrl) }
+      catch { landmarkers = await createLandmarkers(data.wasmUrl, data.poseModelUrl, data.handModelUrl) }
+      poseLandmarker = landmarkers.pose
+      handLandmarker = landmarkers.hand
       cachedHandLandmarks = null
       frameCount = 0
       canvas = new OffscreenCanvas(1, 1)

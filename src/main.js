@@ -2,19 +2,35 @@ import './style.css'
 import { GestureTranslator, DEFAULT_GESTURE_THRESHOLDS } from './gestos/traductor.js'
 import { solicitarCamara } from './vision/camara.js'
 import { BALANCE } from './config/balance.js'
+import { COLORS } from './config/colors.js'
 import { createRunLedger, calculateRunRates, calculateLedgerBer } from './sistemas/metrics.js'
 import { renderBootError } from './ui/boot-error.js'
 import { createGameConfig } from './escenas/game-config.js'
+import { updateGameplay } from './escenas/juego.js'
+import { renderMenuTitle } from './escenas/menu.js'
+import { renderLoadoutSelection as renderLoadoutView } from './escenas/loadout.js'
+import { renderUpgradeChoices, eligibleUpgrades, fusionMethodForUpgrade, evolvedMethodLabel } from './escenas/mejoras.js'
+import { setPausePanelVisible } from './escenas/pausa.js'
+import { formatRunDuration } from './escenas/resultados.js'
 import { createObjectPool } from './entidades/object-pool.js'
 import { comboScoreMultiplier } from './sistemas/combo.js'
-import { collisionOverlapsAabb } from './sistemas/colisiones.js'
+import { beginWave as beginWaveSystem, isFinalWave } from './sistemas/oleadas.js'
+import { spawnBlock as spawnBlockSystem, spawnBoss as spawnBossSystem } from './sistemas/entrada.js'
+import { bossPhaseForHealth } from './sistemas/jefe.js'
+import { corruptFrameScore, penalizeScore, resolveLifeLoss } from './sistemas/rules.js'
 import { createGlobalKeyBinding } from './sistemas/global-keys.js'
 import { audioControlsState } from './sistemas/audio-controls.js'
 import { completeTutorial, readTutorialSeen } from './sistemas/tutorial-state.js'
 import { clearGameStorage } from './sistemas/game-storage.js'
 import { GAME_VERSION } from './config/version.js'
-import { DEFAULT_ACCESSIBILITY, readValidatedStorage, validateAccessibility } from './sistemas/storage.js'
+import { GAMEPLAY } from './config/gameplay.js'
+import { UI } from './config/ui.js'
+import { DEFAULT_ACCESSIBILITY, readValidatedStorage, validateAccessibility, validateGestureTrials, validateRunSummary, validateScores } from './sistemas/storage.js'
 import { resolveTabFocus } from './sistemas/focus-trap.js'
+import { rollPowerUpDrop, powerUpDurationMs } from './sistemas/powerups.js'
+import { fusionLevel, fusedProjectileStats } from './sistemas/fusion.js'
+import { OPTIONAL_SPRITES, probeOptionalSprites } from './sistemas/sprites.js'
+import { collectDueMusicSteps } from './sistemas/audio-scheduler.js'
 
 const app = document.querySelector('#app')
 app.innerHTML = `
@@ -276,11 +292,11 @@ resultsPanel.addEventListener('click', (event) => {
 })
 resultsPanel.addEventListener('input', (event) => {
   if (event.target.id !== 'result-initials') return
-  document.querySelector('#save-score').disabled = !/[A-Z]/i.test(event.target.value)
+  event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)
+  document.querySelector('#save-score').disabled = event.target.value.length === 0
 })
 function renderLeaderboard(limit = 8) {
-  let scores = []
-  try { scores = JSON.parse(localStorage.getItem('tramas-y-bloques-scores') || '[]') } catch {}
+  const scores = readValidatedStorage(localStorage, 'tramas-y-bloques-scores', validateScores, [])
   if (!scores.length) return '<p class="empty-scores">Aún no hay puntajes guardados.</p>'
   return `<table><thead><tr><th>#</th><th>INI</th><th>PUNTOS</th><th>OLEADA</th></tr></thead><tbody>${scores.slice().sort((a, b) => b.score - a.score).slice(0, limit).map((entry, i) => `<tr><td>${i + 1}</td><td>${String(entry.initials || '---').replace(/[^A-Z0-9-]/gi, '').slice(0, 3)}</td><td>${Number(entry.score) || 0}</td><td>${Number(entry.wave) || 1}</td></tr>`).join('')}</tbody></table>`
 }
@@ -300,26 +316,7 @@ document.querySelector('#setting-volume').addEventListener('input', (event) => {
 applyAccessibility()
 focusPanel(mainMenu, '[data-menu-action="play"]')
 
-function renderLoadoutSelection() {
-  document.querySelectorAll('[data-loadout-ball]').forEach((button) => {
-    const selected = loadoutSelection.balls.includes(button.dataset.loadoutBall)
-    button.classList.toggle('is-selected', selected)
-    button.setAttribute('aria-pressed', String(selected))
-    button.disabled = selected && loadoutSelection.balls.length <= 1
-    const status = button.querySelector('.loadout-status')
-    status.textContent = selected ? '✓ Equipado' : loadoutSelection.balls.length >= 2 ? 'Máximo 2 alcanzado · Toca para intercambiar' : 'Toca para equipar'
-  })
-  document.querySelectorAll('[data-loadout-perk]').forEach((button) => {
-    const selected = button.dataset.loadoutPerk === loadoutSelection.perk
-    button.classList.toggle('is-selected', selected)
-    button.setAttribute('aria-pressed', String(selected))
-  })
-  document.querySelectorAll('[data-difficulty]').forEach((button) => {
-    const selected = button.dataset.difficulty === loadoutSelection.difficulty
-    button.classList.toggle('is-selected', selected)
-    button.setAttribute('aria-pressed', String(selected))
-  })
-}
+function renderLoadoutSelection() { renderLoadoutView(loadoutSelection) }
 
 document.querySelectorAll('[data-loadout-ball]').forEach((button) => button.addEventListener('click', () => {
   const ball = button.dataset.loadoutBall
@@ -346,10 +343,10 @@ const gestureTrials = {
 }
 
 try {
-  const saved = JSON.parse(localStorage.getItem(testStorageKey) || '{}')
+  const saved = readValidatedStorage(localStorage, testStorageKey, validateGestureTrials, gestureTrials)
   for (const key of Object.keys(gestureTrials)) {
     for (const outcome of ['success', 'failure', 'falsePositive']) {
-      gestureTrials[key][outcome] = Math.max(0, Number(saved[key]?.[outcome]) || 0)
+      gestureTrials[key][outcome] = saved[key][outcome]
     }
   }
 } catch {}
@@ -379,7 +376,7 @@ debugTrials.addEventListener('click', (event) => {
 })
 
 document.querySelector('#debug-export').addEventListener('click', () => {
-  const report = { createdAt: new Date().toISOString(), thresholds: DEFAULT_GESTURE_THRESHOLDS, results: gestureTrials }
+  const report = { createdAt: new Date().toISOString(), thresholds: DEFAULT_GESTURE_THRESHOLDS, results: validateGestureTrials(gestureTrials) }
   const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }))
   const link = document.createElement('a')
   link.href = url; link.download = 'tramas-prueba-gestos.json'; link.click(); URL.revokeObjectURL(url)
@@ -435,8 +432,8 @@ if (!window.Phaser) {
 } else {
   const W = 960
   const H = 540
-      const COLORS = { cyan: 0x18e6e1, red: 0xff416d, blue: 0x6979ff, gold: 0xffcb57, green: 0x6bff9f, white: 0xeaf8ff, muted: 0x78909f, bg: 0x08121f, panel: 0x0d1b2b }
   const TYPE = { parity: { name: 'PARIDAD', color: COLORS.cyan }, crc: { name: 'CRC', color: COLORS.blue }, hamming: { name: 'HAMMING', color: COLORS.gold } }
+  let optionalSpritesAvailable = new Set()
   let currentScene
   const globalKeys = createGlobalKeyBinding(window, {
     toggleMute: () => { resumeAudioFromUserGesture(); if (currentScene?.toggleAudioMute) currentScene.toggleAudioMute(); else { accessibility.muted = !accessibility.muted; saveAccessibility() } },
@@ -444,6 +441,7 @@ if (!window.Phaser) {
     isReducedMotion: () => accessibility.reducedMotion,
     onMotionBlocked: () => showControlNotice('Temblor bloqueado por Reducir movimiento'),
     toggleDebug: toggleGestureDebug,
+    onError: (error) => currentScene?.handleRuntimeFailure(error, 'atajo global'),
     escape: () => {
       if (currentScene?.mode === 'tutorial') { currentScene.finishTutorial('skip'); return }
       if (!document.querySelector('#settings-back').hidden) { document.querySelector('#settings-back').click(); return }
@@ -468,27 +466,26 @@ if (!window.Phaser) {
       this.audioKeys = new Set(Object.keys(sounds))
       this.missingAudio = new Set()
       this.load.on('loaderror', (file) => { if (this.audioKeys.has(file.key)) this.missingAudio.add(file.key) })
-      const sprites = [
-        ['sprite-node', 'protagonista_quieto.png', 64, 64],
-        ['sprite-healthy', 'trama_sana_bajando.png', 64, 32],
-        ['sprite-corrupt', 'trama_corrupta_error.png', 64, 32],
-        ['sprite-boss', 'jefe_masivo.png', 192, 96],
-        ['sprite-projectiles', 'proyectiles_tipos.png', 32, 32],
-        ['sprite-far', 'fondo_lejano.png', 1280, 720],
-        ['sprite-parallax', 'fondo_parallax.png', 1280, 720],
-        ['sprite-near', 'fondo_cercano.png', 1280, 720],
-        ['sprite-circuits', 'tileset_circuitos.png', 256, 256],
-        ['sprite-ui', 'ui_elementos.png', 512, 64],
-      ]
-      for (const [key, file, frameWidth, frameHeight] of sprites) {
+      for (const [key, file, frameWidth, frameHeight] of OPTIONAL_SPRITES) {
+        if (!optionalSpritesAvailable.has(file)) continue
         this.load.spritesheet(key, `${base}assets/sprites/${file}`, { frameWidth, frameHeight })
       }
       for (const [key, file] of Object.entries(sounds)) this.load.audio(key, `${base}assets/sonidos/${file}`)
     }
 
     create() {
+      try {
+        this.initializeScene()
+      } catch (error) {
+        globalKeys.register()
+        this.handleRuntimeFailure(error, 'inicialización de escena')
+      }
+    }
+
+    initializeScene() {
       currentScene = this
       this.mode = 'title'
+      this.runtimeFailure = false
       this.audioContextFallback = null
       this.audioFallbackMaster = null
       this.fallbackBgmOscillators = []
@@ -508,7 +505,7 @@ if (!window.Phaser) {
       this.congested = false
       this.hitStopMs = 0
       this.invulnMs = 0
-      this.screenShakeEnabled = localStorage.getItem('tramas-screen-shake') !== 'false'
+      this.screenShakeEnabled = readValidatedStorage(localStorage, 'tramas-screen-shake', (value) => typeof value === 'boolean' ? value : true, true)
       this.reducedMotion = accessibility.reducedMotion
       this.slowMotionMs = 0
       this.ledger = createRunLedger(); this.metrics = this.ledger.totals; this.waveMetrics = this.ledger.waves
@@ -518,6 +515,8 @@ if (!window.Phaser) {
       this.shotHeat = 0
       this.blocks = []
       this.shots = []
+      this.powerUps = []
+      this.powerUpTimers = { shield: 0, slow: 0 }
       this.maxParticles = 128
       this.maxShots = 36
       this.maxBlocks = 64
@@ -528,8 +527,10 @@ if (!window.Phaser) {
       this.activeParticles = new Set()
       this.bitParticlePool = createObjectPool(() => this.add.text(0, 0, '0', { fontFamily: 'IBM Plex Mono, Consolas, monospace', fontSize: '12px', color: '#6bff9f', fontStyle: 'bold' }).setOrigin(0.5).setDepth(8).setActive(false).setVisible(false), 24)
       this.distortionPulsePool = createObjectPool(() => this.add.circle(0, 0, 8, 0x42aaff, 0.035).setStrokeStyle(2, 0x72cbff, 0.9).setDepth(8).setActive(false).setVisible(false), 12)
+      this.activeDistortionPulses = new Set()
+      this.powerUpPool = createObjectPool(() => this.createPowerUpDisplay(), BALANCE.powerUps.maxActive)
       // Construye una vez el cupo máximo para evitar crear display objects a mitad de una oleada.
-      for (const pool of [this.blockPool, this.shotPool, this.projectileVisualPool, this.particlePool, this.bitParticlePool, this.distortionPulsePool]) pool.prewarm()
+      for (const pool of [this.blockPool, this.shotPool, this.projectileVisualPool, this.particlePool, this.bitParticlePool, this.distortionPulsePool, this.powerUpPool]) pool.prewarm()
       this.activeBitParticles = new Set()
       this.aim = -Math.PI / 2
       this.fireCooldown = 0
@@ -543,22 +544,67 @@ if (!window.Phaser) {
       this.lastTime = 0
       this.keys = this.input.keyboard.addKeys('LEFT,RIGHT,A,F,SPACE,ONE,TWO,THREE,ENTER,UP,DOWN')
       this.pointerFire = false
-      this.input.on('pointerdown', (p) => { if (this.mode === 'title') this.startRun(); else if (this.mode === 'playing') this.fire() })
-      this.input.on('pointermove', (pointer) => { if (this.mode === 'playing' && !window.poseControl?.active && (pointer.isDown || pointer.wasMoved)) this.aim = Phaser.Math.Clamp(Math.atan2(pointer.worldY - this.player.y, pointer.worldX - this.player.x), -Math.PI + 0.2, -0.2) })
+      this.pointerDownHandler = (p) => { if (this.mode === 'title') this.startRun(); else if (this.mode === 'playing') this.fire() }
+      this.pointerMoveHandler = (pointer) => { if (this.mode === 'playing' && !window.poseControl?.active && (pointer.isDown || pointer.wasMoved)) this.aim = Phaser.Math.Clamp(Math.atan2(pointer.worldY - this.player.y, pointer.worldX - this.player.x), -Math.PI + 0.2, -0.2) }
+      this.input.on('pointerdown', this.pointerDownHandler)
+      this.input.on('pointermove', this.pointerMoveHandler)
       this.drawBackground()
       this.startBackgroundMusic()
       this.createOptionalAnimations()
       this.renderTitle()
       globalKeys.register()
       this.updateShakeIndicator()
+      this.restoreInputOnFocus = () => this.restoreGameplayInput()
+      window.addEventListener('focus', this.restoreInputOnFocus)
+      document.addEventListener('visibilitychange', this.restoreInputOnFocus)
       this.events.once('shutdown', () => {
         globalKeys.unregister()
+        window.removeEventListener('focus', this.restoreInputOnFocus)
+        document.removeEventListener('visibilitychange', this.restoreInputOnFocus)
+        this.input.off('pointerdown', this.pointerDownHandler)
+        this.input.off('pointermove', this.pointerMoveHandler)
         clearInterval(this.fallbackMusicTimer); this.fallbackMusicTimer = null
         this.fallbackBgmOscillators.forEach(({ oscillator }) => { try { oscillator.stop() } catch {} }); this.fallbackBgmOscillators = []
-        for (const pool of [this.blockPool, this.shotPool, this.projectileVisualPool, this.particlePool, this.bitParticlePool, this.distortionPulsePool]) pool?.clear()
+        for (const pool of [this.blockPool, this.shotPool, this.projectileVisualPool, this.particlePool, this.bitParticlePool, this.distortionPulsePool, this.powerUpPool]) pool?.clear()
         this.activeParticles.clear(); this.activeBitParticles.clear(); this.blocks.length = 0; this.shots.length = 0
         if (currentScene === this) currentScene = null
       })
+    }
+
+    handleRuntimeFailure(error, phase = 'ciclo de juego') {
+      if (this.runtimeFailure) return
+      this.runtimeFailure = true
+      this.transitioning = false
+      this.mode = 'paused'
+      console.error(`[Tramas y Bloques] Error en ${phase}.`, error)
+      if (globalControlNotice) {
+        globalControlNotice.hidden = false
+        globalControlNotice.textContent = `Error en ${phase}: ${String(error?.message || error).slice(0, 180)}. La partida se pausó; revisa la consola.`
+      }
+      globalKeys.register()
+      if (this.input?.keyboard) {
+        this.input.keyboard.enabled = true
+        this.input.keyboard.resetKeys?.()
+      }
+      if (!this.runtimeKeyCleanupRegistered) {
+        this.runtimeKeyCleanupRegistered = true
+        this.events?.once?.('shutdown', () => globalKeys.unregister())
+      }
+      if (pausePanel) {
+        setPausePanelVisible(pausePanel, true)
+        focusPanel(pausePanel, '[data-pause-action="menu"]')
+      }
+    }
+
+    restoreGameplayInput() {
+      if (document.visibilityState === 'hidden' || this.mode !== 'playing' || (this.sys?.isActive && !this.sys.isActive())) return
+      if (this.input) this.input.enabled = true
+      if (this.input?.keyboard) {
+        this.input.keyboard.enabled = true
+        this.input.keyboard.resetKeys?.()
+      }
+      this.game?.loop?.wake?.()
+      focusGameCanvas()
     }
 
     updateAudioStatus() {
@@ -590,7 +636,7 @@ if (!window.Phaser) {
     toggleScreenShake() {
       if (accessibility.reducedMotion) { showControlNotice('Temblor bloqueado por Reducir movimiento'); return }
       this.screenShakeEnabled = !this.screenShakeEnabled
-      try { localStorage.setItem('tramas-screen-shake', String(this.screenShakeEnabled)) } catch {}
+      try { localStorage.setItem('tramas-screen-shake', JSON.stringify(this.screenShakeEnabled)) } catch {}
       this.updateShakeIndicator()
       showControlNotice(`Temblor ${this.screenShakeEnabled ? 'activado' : 'desactivado'} · V para cambiar`)
     }
@@ -647,11 +693,16 @@ if (!window.Phaser) {
 
     playAudio(key, config = {}) {
       const exists = !this.missingAudio?.has(key) && this.cache.audio.exists(key)
-      if (exists) return this.sound.play(key, config)
+      if (exists) {
+        try { return this.sound.play(key, config) }
+        catch (error) { this.missingAudio.add(key); console.warn(`No se pudo decodificar el audio «${key}»; se usará el sintetizador.`, error) }
+      }
       const context = this.ensureFallbackAudio()
       if (!context || key === 'bgm') return null
-      if (context.state === 'suspended') context.resume().catch(() => {})
-      return this.playFallbackEffect(key, config, context)
+      try {
+        if (context.state === 'suspended') context.resume().catch(() => {})
+        return this.playFallbackEffect(key, config, context)
+      } catch (error) { console.warn(`Se omitió el audio «${key}» para mantener el juego activo.`, error); return null }
     }
 
     playFallbackTone(context, { frequency, endFrequency = frequency, duration = 0.12, type = 'square', volume = 0.16, delay = 0, detune = 0, cutoff = 1800 }) {
@@ -716,11 +767,16 @@ if (!window.Phaser) {
     startBackgroundMusic() {
       if (this.musicStarted) return
       if (!this.missingAudio?.has('bgm') && this.cache.audio.exists('bgm')) {
-        this.bgmSound = this.sound.add('bgm', { loop: true, volume: 0.3 })
-        this.bgmSound.play()
-      } else {
+        try {
+          this.bgmSound = this.sound.add('bgm', { loop: true, volume: 0.3 })
+          this.bgmSound.play()
+        } catch (error) { this.missingAudio.add('bgm'); this.bgmSound = null; console.warn('No se pudo decodificar la música; se usará el sintetizador.', error) }
+      }
+      if (!this.bgmSound) {
         this.bgmFallbackRequested = true
-        this.startFallbackMusic()
+        try { this.startFallbackMusic() } catch (error) { console.warn('Se omitió la música para mantener el juego activo.', error) }
+      } else {
+        this.bgmFallbackRequested = false
       }
       this.musicStarted = true
       this.updateMusicForWave()
@@ -742,22 +798,24 @@ if (!window.Phaser) {
       this.fallbackMusicTimer = setInterval(() => {
         if (context.state !== 'running') return
         const now = context.currentTime
-        if (now - this.fallbackMusicNextAt > 0.4) this.fallbackMusicNextAt = now + 0.02
-        const stepDuration = 0.22 / this.musicRate
-        while (this.fallbackMusicNextAt < now + 0.08) {
+        const safeRate = Number.isFinite(this.musicRate) && this.musicRate > 0 ? this.musicRate : 1
+        const stepDuration = 0.22 / safeRate
+        const schedule = collectDueMusicSteps({ now, nextAt: this.fallbackMusicNextAt, rate: safeRate })
+        for (const delay of schedule.delays) {
           const step = this.fallbackMusicStep++ % notes.length
           const root = notes[step]
-          this.playFallbackTone(context, { frequency: root * (step % 4 === 0 ? 0.5 : 1), endFrequency: root * 0.98, duration: stepDuration * 0.68, type: 'square', volume: step % 4 === 0 ? 0.075 : 0.035, cutoff: step % 4 === 0 ? 620 : 1500, delay: Math.max(0, this.fallbackMusicNextAt - now) })
-          if (step % 2 === 1) this.playFallbackTone(context, { frequency: root * 2, endFrequency: root * 1.7, duration: stepDuration * 0.28, type: 'square', volume: 0.018, cutoff: 2200, delay: Math.max(0, this.fallbackMusicNextAt - now) })
-          this.fallbackMusicNextAt += stepDuration
+          this.playFallbackTone(context, { frequency: root * (step % 4 === 0 ? 0.5 : 1), endFrequency: root * 0.98, duration: stepDuration * 0.68, type: 'square', volume: step % 4 === 0 ? 0.075 : 0.035, cutoff: step % 4 === 0 ? 620 : 1500, delay })
+          if (step % 2 === 1) this.playFallbackTone(context, { frequency: root * 2, endFrequency: root * 1.7, duration: stepDuration * 0.28, type: 'square', volume: 0.018, cutoff: 2200, delay })
         }
+        this.fallbackMusicNextAt = schedule.nextAt
       }, 24)
       this.syncFallbackAudioVolume()
     }
 
     updateMusicForWave() {
       const waveRate = 1 + Math.max(0, this.wave - 1) * 0.025
-      this.musicRate = Math.min(1.16, waveRate * (this.congested ? 1.07 : 1))
+      const requestedRate = waveRate * (this.congested ? 1.07 : 1)
+      this.musicRate = Phaser.Math.Clamp(Number.isFinite(requestedRate) ? requestedRate : 1, 0.5, 1.16)
       if (this.bgmSound?.setRate) this.bgmSound.setRate(this.musicRate)
       else if (this.audioContextFallback) this.fallbackBgmOscillators.forEach(({ oscillator, baseFrequency }) => { oscillator.frequency.setTargetAtTime(baseFrequency * this.musicRate, this.audioContextFallback.currentTime, 0.35) })
     }
@@ -846,20 +904,13 @@ if (!window.Phaser) {
       this.transitioning = true
       this.transitionOverlay.setAlpha(0)
       this.tweens.add({ targets: this.transitionOverlay, alpha: 0.96, duration: 150, ease: 'Quad.In', onComplete: () => {
-        action()
+        try { action() } catch (error) { this.handleRuntimeFailure(error, 'transición de escena') }
         this.tweens.add({ targets: this.transitionOverlay, alpha: 0, duration: 150, ease: 'Quad.Out', onComplete: () => { this.transitioning = false } })
       } })
     }
 
     renderTitle() {
-      this.mode = 'title'
-      this.titleShade = this.add.rectangle(W / 2, H / 2, W, H, 0x06111e, 0.62)
-      this.titleTop = this.text(W / 2, 150, 'SIMULADOR DE INTEGRIDAD // 001', 13, '#18e6e1', { originX: 0.5, letterSpacing: 3 })
-      this.titleMain = this.text(W / 2, 205, 'TRAMAS Y BLOQUES', 43, '#eaf8ff', { originX: 0.5, fontStyle: 'bold', letterSpacing: 3 })
-      this.titleSub = this.text(W / 2, 263, 'EL RUIDO ESTÁ EN LA LÍNEA. ¿PUEDES DETECTARLO?', 13, '#8da6b9', { originX: 0.5, letterSpacing: 1 })
-      this.titlePrompt = this.text(W / 2, 352, 'CONFIGURA TU LOADOUT PARA INICIAR', 15, '#18e6e1', { originX: 0.5 })
-      this.titleHelp = this.text(W / 2, 390, '5 oleadas · 5 vidas · usa cámara o teclado', 12, '#8da6b9', { originX: 0.5 })
-      if (!this.reducedMotion) this.tweens.add({ targets: this.titlePrompt, alpha: 0.25, duration: 720, yoyo: true, repeat: -1 })
+      renderMenuTitle(this, W, H)
     }
 
     clearTitle() {
@@ -891,9 +942,8 @@ if (!window.Phaser) {
       this.clearResults()
       this.clearTitle()
       this.poseTracking = false
+      this.clearRunObjects()
       this.actor?.destroy(); this.hud?.destroy(); this.bufferText?.destroy(); this.aimGraphics?.destroy(); this.bossHud?.destroy(); this.bossAttackGraphics?.destroy()
-      this.blocks?.forEach((block) => block.container.destroy())
-      this.shots?.forEach((shot) => { shot.dot?.destroy(); shot.aura?.destroy(); shot.sprite?.destroy() })
       this.toast?.destroy()
       this.difficulty = BALANCE.difficulty[loadoutSelection.difficulty] ?? BALANCE.difficulty.normal
       this.wave = 1; this.lives = this.difficulty.lives; this.score = 0; this.detected = 0; this.corrected = 0; this.lost = 0
@@ -902,12 +952,13 @@ if (!window.Phaser) {
       this.ledger = createRunLedger(); this.metrics = this.ledger.totals; this.waveMetrics = this.ledger.waves
       this.combo = 0; this.congested = false; this.hitStopMs = 0
       this.invulnMs = 0; this.slowMotionMs = 0
-      this.upgrades = { rapid: 0, multi: 0, shield: 0, pierce: 0, hammingArea: 0, bigBall: 0, slowBlocks: 0, scoreMagnet: 0, extraLife: 0 }; this.upgrades[loadoutSelection.perk] = 1
+      this.upgrades = { rapid: 0, multi: 0, shield: 0, pierce: 0, hammingArea: 0, bigBall: 0, slowBlocks: 0, scoreMagnet: 0, extraLife: 0, fusionParity: 0, fusionCrc: 0, fusionHamming: 0 }; this.upgrades[loadoutSelection.perk] = 1
       this.shotHeat = 0
       this.equippedBalls = [...loadoutSelection.balls]
       this.selectedBall = this.equippedBalls[0]
       document.querySelector('#method-summary-status').textContent = ({ parity: 'PARIDAD', crc: 'CRC', hamming: 'HAMMING' })[this.selectedBall] || this.selectedBall.toUpperCase()
       this.blocks = []; this.shots = []; this.boss = null
+      this.powerUpTimers = { shield: 0, slow: 0 }
       this.player = { x: W / 2, y: H - 72, radius: 18, velocityX: 0 }
       this.actor = this.add.container(this.player.x, this.player.y)
       const glow = this.add.circle(0, 0, 48, COLORS.cyan, 0.2)
@@ -940,7 +991,8 @@ if (!window.Phaser) {
       this.reticleHeatLabel = this.text(W / 2, H - 141, '', 8, '#ff6c87', { originX: 0.5, fontStyle: 'bold' }).setVisible(false)
       this.comboBg = this.add.rectangle(810, 65, 128, 5, 0x263b4b, 1).setOrigin(0, 0.5)
       this.comboBar = this.add.rectangle(810, 65, 0, 5, COLORS.green, 1).setOrigin(0, 0.5)
-      this.hud.add([this.bufferText, this.cooldownLabel, this.cooldownBg, this.cooldownBar, this.comboBg, this.comboBar, this.reticleHeatBg, this.reticleHeatBar, this.reticleHeatLabel])
+      this.powerUpText = this.text(24, 72, '', 8, '#ffcb57')
+      this.hud.add([this.bufferText, this.cooldownLabel, this.cooldownBg, this.cooldownBar, this.comboBg, this.comboBar, this.reticleHeatBg, this.reticleHeatBar, this.reticleHeatLabel, this.powerUpText])
       this.hud.add([this.text(948, 18, 'ESC PAUSA', 10, '#78909f', { originX: 1 })])
       this.hud.setScrollFactor(0)
       this.bossHud = this.add.container(0, 0).setDepth(29).setVisible(false)
@@ -980,16 +1032,8 @@ if (!window.Phaser) {
     }
 
     beginWave() {
-      this.ledger.beginWave(this.wave)
-      this.updateMusicForWave()
-      const waveConfig = BALANCE.waves[this.wave]
-      this.waveTotal = waveConfig.count
-      this.spawned = 0
-      this.spawnTimer = 0.5
-      this.boss = null
-      if (this.wave === 5) this.spawnBoss()
-      this.updateHud()
-      this.showToast(this.wave === 5 ? 'ALERTA: TRAMA MASIVA' : `OLEADA ${String(this.wave).padStart(2, '0')} // INICIADA`)
+      try { beginWaveSystem(this, BALANCE) }
+      catch (error) { this.handleRuntimeFailure(error, 'inicio de oleada') }
     }
 
     recordMetric(key, amount = 1) {
@@ -1046,19 +1090,20 @@ if (!window.Phaser) {
     }
 
     loseLife(playError = true, cause = 'corrupt') {
-      if (this.invulnMs > 0) return false
-      if (this.upgrades.shield > 0) {
-        this.upgrades.shield--
+      if (this.powerUpTimers?.shield > 0) return false
+      const outcome = resolveLifeLoss({ lives: this.lives, invulnMs: this.invulnMs, shield: this.upgrades.shield, cause })
+      if (!outcome.lost && outcome.shield < this.upgrades.shield) {
+        this.upgrades.shield = outcome.shield
         this.showToast('ESCUDO ACTIVADO · VIDA PROTEGIDA')
         this.updateHud()
         return false
-      } else {
-        this.lives--
-        this.lifeLossCounts[cause] = (this.lifeLossCounts[cause] || 0) + 1
-        this.lastLifeLossCause = cause
-        this.invulnMs = BALANCE.player.invulnerabilityMs
-        if (playError) this.playAudio('error')
       }
+      if (!outcome.lost) return false
+      this.lives = outcome.lives
+      this.invulnMs = outcome.invulnMs
+      this.lifeLossCounts[cause] = (this.lifeLossCounts[cause] || 0) + 1
+      this.lastLifeLossCause = cause
+      if (playError) this.playAudio('error')
       if (this.lives <= 0) {
         if (cause === 'healthy') this.defeatReason = `Sin vidas: ${this.lifeLossCounts.healthy} impactos a tramas sanas.`
         else if (cause === 'boss') this.defeatReason = `Sin vidas: ${this.lifeLossCounts.boss} ataques del jefe.`
@@ -1109,6 +1154,63 @@ if (!window.Phaser) {
       this.tweens.add({ targets: text, y: y - 38, alpha: 0, scale: 1.15, duration: 650, ease: 'Cubic.Out', onComplete: () => text.destroy() })
     }
 
+    createPowerUpDisplay() {
+      const container = this.add.container(0, 0).setDepth(10).setActive(false).setVisible(false)
+      const halo = this.add.circle(0, 0, 15, 0x0b1b2b, 0.95).setStrokeStyle(2, COLORS.gold, 1)
+      const icon = this.add.text(0, 0, '⬡', { fontFamily: 'IBM Plex Mono, Consolas, monospace', fontSize: '18px', color: '#ffcb57', fontStyle: 'bold' }).setOrigin(0.5)
+      container.add([halo, icon])
+      return { container, halo, icon, type: null, x: 0, y: 0, alive: false }
+    }
+
+    spawnPowerUp(x, y) {
+      const type = rollPowerUpDrop()
+      if (!type || this.powerUps.length >= BALANCE.powerUps.maxActive) return
+      const item = this.powerUpPool.acquire()
+      if (!item) return
+      item.type = type; item.x = x; item.y = y; item.alive = true
+      item.icon.setText(type === 'shield' ? '⬡' : '◷').setColor(type === 'shield' ? '#ffcb57' : '#75baff')
+      item.halo.setStrokeStyle(2, type === 'shield' ? COLORS.gold : COLORS.blue, 1)
+      item.container.setPosition(x, y).setScale(1).setAlpha(1).setActive(true).setVisible(true)
+      if (!this.reducedMotion) this.tweens.add({ targets: item.container, scale: { from: 0.7, to: 1.12 }, duration: 480, yoyo: true, repeat: -1, ease: 'Sine.InOut' })
+      this.powerUps.push(item)
+    }
+
+    releasePowerUp(item) {
+      if (!item) return
+      this.tweens?.killTweensOf(item.container)
+      item.alive = false; item.type = null
+      item.container.setActive(false).setVisible(false).setScale(1).setAlpha(1)
+      const index = this.powerUps?.indexOf(item) ?? -1
+      if (index >= 0) this.powerUps.splice(index, 1)
+      this.powerUpPool?.release(item)
+    }
+
+    activatePowerUp(type) {
+      const duration = powerUpDurationMs(type)
+      if (!duration) return
+      this.powerUpTimers[type] = Math.max(this.powerUpTimers[type] || 0, duration)
+      this.playAudio('mejora')
+      this.showToast(type === 'shield' ? 'ESCUDO DE RED · 12 s' : 'RALENTIZACIÓN · 9 s')
+      this.floatingText(this.player.x, this.player.y - 54, type === 'shield' ? '⬡ ESCUDO' : '◷ FLUJO LENTO', type === 'shield' ? '#ffcb57' : '#75baff')
+    }
+
+    updatePowerUps(dt, delta) {
+      this.powerUpTimers.shield = Math.max(0, this.powerUpTimers.shield - delta)
+      this.powerUpTimers.slow = Math.max(0, this.powerUpTimers.slow - delta)
+      for (const item of [...this.powerUps]) {
+        item.y += BALANCE.powerUps.fallSpeed * dt
+        item.container.setPosition(item.x, item.y)
+        if (this.player && Math.hypot(item.x - this.player.x, item.y - this.player.y) <= BALANCE.powerUps.catchRadius + this.player.radius) {
+          this.activatePowerUp(item.type)
+          this.releasePowerUp(item)
+        } else if (item.y >= H - 58) this.releasePowerUp(item)
+      }
+      const active = []
+      if (this.powerUpTimers.shield > 0) active.push(`⬡ ${Math.ceil(this.powerUpTimers.shield / 1000)}s`)
+      if (this.powerUpTimers.slow > 0) active.push(`◷ ${Math.ceil(this.powerUpTimers.slow / 1000)}s`)
+      this.powerUpText?.setText(active.join('   ')).setVisible(active.length > 0)
+    }
+
     createBlockDisplay() {
       const container = this.add.container(0, 0)
       const borderGraphic = this.add.graphics(); container.add(borderGraphic)
@@ -1127,7 +1229,7 @@ if (!window.Phaser) {
       this.recordMetric('created')
       if (corrupted) this.recordMetric('corruptCreated')
       const { container, borderGraphic: gfx, bits, label, sprite } = item
-      container.setPosition(x, y).setVisible(true).setAlpha(1).setScale(1)
+      container.setActive(true).setPosition(x, y).setVisible(true).setAlpha(1).setScale(1)
       this.tweens.killTweensOf(container)
       bits.forEach((bit) => { this.tweens.killTweensOf(bit); bit.setVisible(true).setAlpha(1).setScale(1) })
       if (sprite) { this.tweens.killTweensOf(sprite); sprite.setVisible(false) }
@@ -1160,7 +1262,7 @@ if (!window.Phaser) {
       const icon = corrupted ? '⚠' : '✓'
       const labelText = boss ? `${icon} TRAMA MASIVA · ${hp}` : (corrupted ? `${icon} ERROR DETECTADO` : `${icon} TRAMA ÍNTEGRA`)
       label.setPosition(0, -h / 2 + 15).setFontSize(boss ? '10px' : '8px').setColor(corrupted ? '#ff8ba5' : '#78dedc').setText(labelText)
-      Object.assign(item, { x, y, w, h, corrupted, boss, hp, maxHp: hp, phase: 1, attackTimer: 2.8, warningMs: 0, phaseTransitionMs: 0, disruptedMs: 0, warningText: null, entering: false, alive: true, badBit, zigzag: false, hitError: false, markedProcessed: false, impactFlashMs: 0, seed: Math.random() * Math.PI * 2 })
+      Object.assign(item, { x, y, w, h, corrupted, boss, hp, maxHp: hp, phase: 1, attackTimer: GAMEPLAY.boss.initialAttackDelaySeconds, warningMs: 0, phaseTransitionMs: 0, disruptedMs: 0, warningText: null, entering: false, alive: true, badBit, zigzag: false, hitError: false, markedProcessed: false, impactFlashMs: 0, seed: Math.random() * Math.PI * 2 })
       item.speed = (boss ? BALANCE.waves[5].speed : BALANCE.waves[this.wave].speed) * this.difficulty.speedMultiplier * Math.max(0.62, 1 - this.upgrades.slowBlocks * 0.08)
       this.blocks.push(item)
       if (boss) this.boss = item
@@ -1177,31 +1279,16 @@ if (!window.Phaser) {
     }
 
     spawnBoss() {
-      this.playAudio('jefe')
-      const boss = this.createBlock(W / 2, -80, true, true, BALANCE.waves[5].bossHealth)
-      if (!boss) return
-      boss.entering = true
-      boss.container.setScale(0.72)
-      this.tweens.add({ targets: boss.container, y: 145, scale: 1, duration: 1050, ease: 'Back.Out', onComplete: () => { if (boss.alive) { boss.y = 145; boss.entering = false } } })
-      this.bossHud?.setVisible(true)
-      this.showToast('ENTRADA DE TRAMA MASIVA')
-      this.spawned = 1
+      spawnBossSystem(this, BALANCE, W)
     }
 
     spawnBlock() {
-      if (this.spawned >= this.waveTotal) return
-      const waveConfig = BALANCE.waves[this.wave]
-      const corrupted = Math.random() < waveConfig.corruptChance
-      const block = this.createBlock(90 + Math.random() * (W - 180), -35, corrupted)
-      if (!block) return
-      block.zigzag = this.wave === 4 && Math.random() < 0.65
-      block.originX = block.x
-      block.zigzagPhase = Math.random() * Math.PI * 2
-      this.spawned++
+      spawnBlockSystem(this, BALANCE, W)
     }
 
     createProjectileVisual(x, y, type, radius) {
       const color = TYPE[type].color
+      const evolution = fusionLevel(type, this.upgrades)
       const visual = this.projectileVisualPool.acquire()
       if (!visual) return null
       const { shape, aura, sprite } = visual
@@ -1219,8 +1306,9 @@ if (!window.Phaser) {
         }
         shape.closePath(); shape.fillPath(); shape.strokePath()
       }
+      if (evolution > 0) shape.lineStyle(evolution + 1, 0xeaf8ff, 0.92).strokeCircle(0, 0, radius + evolution * 3)
       aura.setPosition(x, y).setRadius(radius + (type === 'hamming' ? 9 : 5)).setFillStyle(color, type === 'hamming' ? 0.24 : type === 'crc' ? 0.18 : 0.11).setStrokeStyle(type === 'hamming' ? 2 : type === 'crc' ? 1.6 : 1, color, type === 'hamming' ? 0.95 : 0.75).setVisible(true).setAlpha(1).setScale(1)
-      const glowStrength = type === 'hamming' ? 3.2 : type === 'crc' ? 2.6 : 1.25
+      const glowStrength = (type === 'hamming' ? 3.2 : type === 'crc' ? 2.6 : 1.25) + evolution * 0.8
       if (!aura.postGlowFx && this.game.renderer.type === Phaser.WEBGL && aura.postFX?.addGlow) { try { aura.postGlowFx = aura.postFX.addGlow(color, glowStrength, 0.65, false, 0.08, type === 'parity' ? 6 : 9) } catch {} }
       if (aura.postGlowFx) { aura.postGlowFx.color = color; aura.postGlowFx.outerStrength = glowStrength; aura.postGlowFx.innerStrength = type === 'hamming' ? 0.9 : 0.65 }
       if (type === 'hamming' && !this.reducedMotion) this.tweens.add({ targets: aura, scale: 1.22, alpha: 0.08, duration: 260, yoyo: true, repeat: -1, ease: 'Sine.InOut' })
@@ -1239,9 +1327,10 @@ if (!window.Phaser) {
     acquireShot(x, y, vx, vy, type, radius) {
       const shot = this.shotPool.acquire()
       if (!shot) return null
-      Object.assign(shot, { x, y, vx, vy, type, bounces: 0, pierces: 0, radius, alive: true, trailTimer: 0 })
+      const fused = fusedProjectileStats(type, radius, this.upgrades)
+      Object.assign(shot, { x, y, vx, vy, type, bounces: 0, pierces: 0, radius: fused.radius, baseRadius: radius, damage: fused.damage, evolution: fused.level, alive: true, trailTimer: 0 })
       shot.hits.clear()
-      const visual = this.createProjectileVisual(x, y, type, radius)
+      const visual = this.createProjectileVisual(x, y, type, shot.radius)
       if (!visual) { shot.alive = false; this.shotPool.release(shot); return null }
       shot.visual = visual
       shot.dot = visual.shape; shot.aura = visual.aura; shot.sprite = visual.sprite
@@ -1270,7 +1359,7 @@ if (!window.Phaser) {
       if (this.upgrades.multi > 0 && this.shots.length < this.maxShots) {
         for (const offset of [-0.09, 0.09]) {
           if (this.shots.length >= this.maxShots) break
-          this.acquireShot(this.player.x, this.player.y - 18, Math.cos(angle + offset) * speed, Math.sin(angle + offset) * speed, shot.type, shot.radius)
+          this.acquireShot(this.player.x, this.player.y - 18, Math.cos(angle + offset) * speed, Math.sin(angle + offset) * speed, shot.type, shot.baseRadius)
         }
       }
     }
@@ -1301,22 +1390,21 @@ if (!window.Phaser) {
               this.floatingText(neighbor.x, neighbor.y - 20, 'CORREGIDO', '#6bff9f')
             }
           }
-        } else { this.recordMetric('misfires'); this.markProcessed(block); this.playAudio('error'); this.breakCombo(); this.score = Math.max(0, this.score - BALANCE.score.hammingHealthyPenalty); this.emitBurst(block.x, block.y, COLORS.red); this.flashBlockError(block); this.floatingText(block.x, block.y - 25, 'TRAMA SANA · ERROR', '#ff416d') }
+        } else { this.recordMetric('misfires'); this.markProcessed(block); this.playAudio('error'); this.breakCombo(); this.score = penalizeScore(this.score, BALANCE.score.hammingHealthyPenalty); this.emitBurst(block.x, block.y, COLORS.red); this.flashBlockError(block); this.floatingText(block.x, block.y - 25, 'TRAMA SANA · ERROR', '#ff416d') }
         this.destroyShot(shot)
       } else if (!block.corrupted && !block.boss) {
-        this.recordMetric('misfires'); this.markProcessed(block); this.playAudio('error'); this.breakCombo(); const lifeLost = this.loseLife(false, 'healthy'); this.score = Math.max(0, this.score - BALANCE.score.healthyPenalty); this.emitBurst(block.x, block.y, COLORS.red); block.hitError = true; this.flashBlockError(block); this.floatingText(block.x, block.y - 25, 'TRAMA SANA · ERROR', '#ff416d'); if (lifeLost) this.triggerDamageFeedback(); this.time.delayedCall(360, () => { this.removeBlock(block); this.updateHud() }); this.destroyShot(shot); this.updateHud()
+        this.recordMetric('misfires'); this.markProcessed(block); this.playAudio('error'); this.breakCombo(); const lifeLost = this.loseLife(false, 'healthy'); this.score = penalizeScore(this.score, BALANCE.score.healthyPenalty); this.emitBurst(block.x, block.y, COLORS.red); block.hitError = true; this.flashBlockError(block); this.floatingText(block.x, block.y - 25, 'TRAMA SANA · ERROR', '#ff416d'); if (lifeLost) this.triggerDamageFeedback(); this.time.delayedCall(360, () => { this.removeBlock(block); this.updateHud() }); this.destroyShot(shot); this.updateHud()
         if (this.lives <= 0) this.finishRun(false)
       } else if (block.boss) {
-        block.hp -= BALANCE.combat.damage; block.label.setText(`TRAMA MASIVA · FASE ${block.phase}`); this.score += BALANCE.score.bossHit; this.emitBurst(block.x + Phaser.Math.Between(-35, 35), block.y + 10, TYPE[shot.type].color); this.floatingText(block.x, block.y - 38, `+${BALANCE.score.bossHit}`, '#ffb4c5'); this.updateBossPhase(block)
-        if (block.hp <= 0) { if (block.corrupted) this.recordMetric('detected'); this.playAudio('impacto', { detune: Phaser.Math.Between(-60, 60) }); this.triggerHitStop(45); const multiplier = this.recordCorruptKill(); this.disintegrateBlock(block); this.removeBlock(block); this.score += Math.round(BALANCE.score.bossDefeat * multiplier); this.floatingText(block.x, block.y, `+${Math.round(BALANCE.score.bossDefeat * multiplier)}`, '#ffcb57'); this.showToast('JEFE DESACTIVADO') }
+        block.hp -= shot.damage || BALANCE.combat.damage; block.label.setText(`TRAMA MASIVA · FASE ${block.phase}`); this.score += BALANCE.score.bossHit * (shot.damage || 1); this.emitBurst(block.x + Phaser.Math.Between(-35, 35), block.y + 10, TYPE[shot.type].color); this.floatingText(block.x, block.y - 38, `+${BALANCE.score.bossHit * (shot.damage || 1)}`, '#ffb4c5'); this.updateBossPhase(block)
+        if (block.hp <= 0) { if (block.corrupted) this.recordMetric('detected'); this.playAudio('impacto', { detune: Phaser.Math.Between(-60, 60) }); this.triggerHitStop(45); const multiplier = this.recordCorruptKill(); this.disintegrateBlock(block); this.spawnPowerUp(block.x, block.y); this.removeBlock(block); this.score += Math.round(BALANCE.score.bossDefeat * multiplier); this.floatingText(block.x, block.y, `+${Math.round(BALANCE.score.bossDefeat * multiplier)}`, '#ffcb57'); this.showToast('JEFE DESACTIVADO') }
         if (shot.type === 'crc') this.bounceShot(shot); else this.destroyShot(shot)
       } else {
         this.playAudio('impacto', { detune: Phaser.Math.Between(-60, 60) })
         this.recordMetric('detected')
         const multiplier = this.recordCorruptKill()
-        const basePoints = shot.type === 'crc' ? BALANCE.score.corruptCrc : BALANCE.score.corruptParity
-        const points = Math.round(basePoints * multiplier * (1 + this.upgrades.scoreMagnet * 0.12))
-        this.score += points; this.triggerHitStop(32); this.floatingText(block.x, block.y - 20, `+${points}`, '#6bff9f'); this.disintegrateBlock(block); this.removeBlock(block)
+        const points = corruptFrameScore({ type: shot.type, comboMultiplier: multiplier, scoreMagnetUpgrades: this.upgrades.scoreMagnet })
+        this.score += points; this.triggerHitStop(32); this.floatingText(block.x, block.y - 20, `+${points}`, '#6bff9f'); this.disintegrateBlock(block); this.spawnPowerUp(block.x, block.y); this.removeBlock(block)
         if (this.screenShakeEnabled && !this.reducedMotion) this.cameras.main.shake(55, 0.0018)
         if (shot.type === 'crc' && this.upgrades.pierce > shot.pierces) { shot.pierces++; shot.hits.clear() }
         else if (shot.type === 'crc') this.bounceShot(shot)
@@ -1354,12 +1442,11 @@ if (!window.Phaser) {
     }
 
     updateBossPhase(boss) {
-      const ratio = boss.hp / boss.maxHp
-      const phase = ratio <= 1 / 3 ? 3 : ratio <= 2 / 3 ? 2 : 1
+      const phase = bossPhaseForHealth(boss.hp, boss.maxHp)
       if (phase === boss.phase) return
       boss.phase = phase
-      boss.attackTimer = Math.max(2.2, boss.attackTimer)
-      boss.phaseTransitionMs = 1450
+      boss.attackTimer = Math.max(GAMEPLAY.boss.phaseAttackPauseSeconds, boss.attackTimer)
+      boss.phaseTransitionMs = GAMEPLAY.boss.phaseTransitionMs
       boss.phaseFlashColor = phase === 3 ? 0xff244f : 0xff8a3d
       this.bossWarning?.setText(`⚠ CAMBIO DE FASE · ${phase} · PREPÁRATE`).setColor(phase === 3 ? '#ff416d' : '#ffad68').setVisible(true)
       if (!this.reducedMotion) {
@@ -1374,7 +1461,7 @@ if (!window.Phaser) {
     drawBossPhaseTransition(boss) {
       const graphics = this.bossAttackGraphics
       if (!graphics || !boss?.alive || boss.phaseTransitionMs <= 0) return
-      const progress = 1 - boss.phaseTransitionMs / 1450
+      const progress = 1 - boss.phaseTransitionMs / GAMEPLAY.boss.phaseTransitionMs
       graphics.clear()
       if (this.reducedMotion) {
         graphics.lineStyle(3, boss.phaseFlashColor ?? COLORS.red, 0.72).strokeCircle(boss.x, boss.y, 104)
@@ -1392,7 +1479,7 @@ if (!window.Phaser) {
       if (!graphics || !boss?.targetXs) return
       const pulse = this.reducedMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 0.018)
       graphics.clear()
-      const halfWidth = boss.phase === 1 ? 48 : boss.phase === 2 ? 76 : 58
+      const halfWidth = GAMEPLAY.boss.attackLaneWidths[`phase${boss.phase}`]
       for (const x of boss.targetXs) {
         graphics.fillStyle(0xff244f, 0.07 + pulse * 0.12).fillRect(x - halfWidth, 160, halfWidth * 2, H - 225)
         graphics.lineStyle(3, 0xff416d, 0.35 + pulse * 0.65).lineBetween(x, 160, x, H - 65)
@@ -1426,23 +1513,23 @@ if (!window.Phaser) {
         if (boss.warningText) boss.warningText.setVisible(boss.warningMs > 0)
         if (boss.warningMs <= 0) {
           const dangerXs = boss.targetXs ?? [boss.targetX ?? this.player.x]
-          const dangerWidth = boss.phase === 1 ? 48 : boss.phase === 2 ? 76 : 58
+          const dangerWidth = GAMEPLAY.boss.attackLaneWidths[`phase${boss.phase}`]
           if (dangerXs.some((dangerX) => Math.abs(this.player.x - dangerX) < dangerWidth) && this.invulnMs <= 0) {
             const lifeLost = this.loseLife(true, 'boss')
             if (lifeLost) this.triggerDamageFeedback()
           }
           if (this.lives <= 0) { this.finishRun(false); return }
           this.bossAttackGraphics?.clear()
-          boss.attackTimer = Math.max(1.1, 2.8 - boss.phase * 0.55)
+          boss.attackTimer = Math.max(GAMEPLAY.boss.attackCooldownFloorSeconds, GAMEPLAY.boss.attackCooldownBaseSeconds - boss.phase * GAMEPLAY.boss.attackCooldownPhaseStepSeconds)
         }
         return
       }
       boss.attackTimer -= dt
       if (boss.attackTimer <= 0) {
         this.playAudio('jefe')
-        boss.targetX = boss.phase === 1 ? this.player.x : Phaser.Math.Clamp(this.player.x + (Math.random() - 0.5) * 220, 55, W - 55)
-        boss.targetXs = boss.phase === 3 ? [boss.targetX - 75, boss.targetX + 75].map((x) => Phaser.Math.Clamp(x, 40, W - 40)) : [boss.targetX]
-        boss.warningMs = 980
+        boss.targetX = boss.phase === 1 ? this.player.x : Phaser.Math.Clamp(this.player.x + (Math.random() - 0.5) * GAMEPLAY.boss.targetVariance, GAMEPLAY.boss.targetPadding, W - GAMEPLAY.boss.targetPadding)
+        boss.targetXs = boss.phase === 3 ? [boss.targetX - GAMEPLAY.boss.twinTargetOffset, boss.targetX + GAMEPLAY.boss.twinTargetOffset].map((x) => Phaser.Math.Clamp(x, GAMEPLAY.boss.twinTargetPadding, W - GAMEPLAY.boss.twinTargetPadding)) : [boss.targetX]
+        boss.warningMs = GAMEPLAY.boss.attackWarningMs
         this.bossWarning.setText(boss.phase === 1 ? '¡ATAQUE VERTICAL! MUÉVETE' : boss.phase === 2 ? '¡BARRIDO ADELANTADO! CAMBIA DE POSICIÓN' : '¡DOBLE BARRIDO! ESQUIVA AMBOS').setVisible(true)
         this.bossWarning.setX(boss.targetXs[0])
         this.bossWarning.setColor('#ff416d')
@@ -1493,9 +1580,10 @@ if (!window.Phaser) {
       for (let i = 0; i < 7; i++) this.emitParticle(x, y, 0x55baff, 2, Phaser.Math.Between(-45, 45), Phaser.Math.Between(-30, 20), 300)
       const pulse = this.distortionPulsePool.acquire()
       if (!pulse) return
+      this.activeDistortionPulses.add(pulse)
       pulse.setPosition(x, y).setScale(1).setAlpha(1).setActive(true).setVisible(true)
       this.tweens.killTweensOf(pulse)
-      this.tweens.add({ targets: pulse, scale: radius / 8, alpha: 0, duration: 420, ease: 'Cubic.Out', onComplete: () => { pulse.setActive(false).setVisible(false).setScale(1).setAlpha(1); this.distortionPulsePool.release(pulse) } })
+      this.tweens.add({ targets: pulse, scale: radius / 8, alpha: 0, duration: 420, ease: 'Cubic.Out', onComplete: () => { this.activeDistortionPulses.delete(pulse); pulse.setActive(false).setVisible(false).setScale(1).setAlpha(1); this.distortionPulsePool.release(pulse) } })
     }
 
     emitBurst(x, y, color) {
@@ -1526,7 +1614,9 @@ if (!window.Phaser) {
 
     updateParticles(delta) {
       const dt = Math.min(delta, 50) / 1000
+      let particleIterations = 0
       for (const particle of this.activeParticles) {
+        if (particleIterations++ >= this.maxParticles) break
         particle.age += delta; particle.vy += particle.gravity * dt
         particle.vx *= Math.pow(0.985, dt * 60); particle.vy *= Math.pow(0.996, dt * 60)
         particle.x += particle.vx * dt; particle.y += particle.vy * dt; particle.rotation += particle.vx * dt * 0.025
@@ -1534,7 +1624,9 @@ if (!window.Phaser) {
         particle.setAlpha(0.95 * fade).setScale(Math.max(0.15, 1 - progress))
         if (particle.age >= particle.life) { this.activeParticles.delete(particle); particle.setActive(false).setVisible(false).setAlpha(1).setScale(1).setRotation(0); this.particlePool.release(particle) }
       }
+      let bitIterations = 0
       for (const bit of this.activeBitParticles) {
+        if (bitIterations++ >= 24) break
         bit.age += delta; bit.vy += bit.gravity * dt
         bit.vx *= Math.pow(0.99, dt * 60); bit.vy *= Math.pow(0.997, dt * 60)
         bit.spin = (bit.spin + bit.angularAcceleration * dt) * Math.pow(0.985, dt * 60)
@@ -1566,138 +1658,9 @@ if (!window.Phaser) {
     }
 
     update(time, delta) {
-      this.updateParticles(delta)
-      const slowFactor = this.slowMotionMs > 0 ? 0.35 : 1
-      this.slowMotionMs = Math.max(0, this.slowMotionMs - delta)
-      const dt = Math.min(delta / 1000, 0.04) * slowFactor
-      this.stars?.forEach((s) => { s.y += dt * 12; if (s.y > H) { s.y = 0; s.x = Math.random() * W } })
-      this.farGrid?.setPosition(Math.sin(time * 0.00012) * 4, Math.cos(time * 0.0001) * 3)
-      this.circuitLayer?.setPosition(Math.sin(time * 0.0002) * 8, Math.sin(time * 0.00016) * 4)
-      this.dataFlows?.forEach((flow) => {
-        flow.object.x += flow.speed * dt
-        if (flow.object.x > W + 8) flow.object.x = -8
-        flow.object.y = this.flowLanes[flow.lane] + Math.sin(time * 0.004 + flow.offset) * 1.2 + this.circuitLayer.y
-      })
-      if (this.transitioning) return
-      if (this.mode === 'title') { if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) || Phaser.Input.Keyboard.JustDown(this.keys.ENTER)) this.startRun(); return }
-      if (this.mode === 'tutorial') { if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) || Phaser.Input.Keyboard.JustDown(this.keys.ENTER)) this.advanceTutorial(); return }
-      if (this.mode === 'paused') return
-      if (this.mode === 'upgrade' || this.mode === 'results') {
-        if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.mode === 'upgrade' ? this.chooseUpgrade(0) : this.startRun()
-        if (Phaser.Input.Keyboard.JustDown(this.keys.TWO) && this.mode === 'upgrade') this.chooseUpgrade(1)
-        if (Phaser.Input.Keyboard.JustDown(this.keys.THREE) && this.mode === 'upgrade') this.chooseUpgrade(2)
-        if (this.mode === 'results' && (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) || Phaser.Input.Keyboard.JustDown(this.keys.ENTER))) this.startRun()
-        return
-      }
-      if (this.mode !== 'playing') return
-      if (this.hitStopMs > 0) {
-        this.hitStopMs = Math.max(0, this.hitStopMs - delta)
-        return
-      }
-      this.fireCooldown = Math.max(0, this.fireCooldown - dt)
-      this.shotHeat = Math.max(0, this.shotHeat - BALANCE.combat.spamHeatDecayPerSecond * dt)
-      this.invulnMs = Math.max(0, this.invulnMs - delta)
-      this.cooldownBar?.setDisplaySize(138 * (1 - Math.min(1, this.fireCooldown / (this.fireCooldownMax || 0.34))), 5)
-      this.updateHeatIndicator(time)
-      let moveInput = Number(this.keys.RIGHT.isDown) - Number(this.keys.LEFT.isDown)
-      const poseSteering = Boolean(window.poseControl?.active && this.poseTracking)
-      let desiredVelocity = moveInput * BALANCE.player.moveSpeed
-      if (poseSteering) {
-        const followError = this.poseX - this.player.x
-        desiredVelocity = Phaser.Math.Clamp(followError * BALANCE.player.poseFollowSpeed, -BALANCE.player.moveSpeed, BALANCE.player.moveSpeed)
-        this.aim = Phaser.Math.Linear(this.aim, this.poseAim, Math.min(1, 7 * dt))
-      } else {
-        if (this.keys.A.isDown) this.aim = Math.max(-Math.PI + 0.2, this.aim - 1.65 * dt)
-        if (this.keys.F.isDown) this.aim = Math.min(-0.2, this.aim + 1.65 * dt)
-      }
-      const gamepad = navigator.getGamepads?.().find((pad) => pad?.connected)
-      if (gamepad) {
-        const moveAxis = gamepad.axes?.[0] ?? 0
-        if (Math.abs(moveAxis) > 0.18 && !poseSteering) moveInput = Phaser.Math.Clamp(moveInput + moveAxis, -1, 1)
-        const aimX = gamepad.axes?.[2] ?? 0
-        const aimY = gamepad.axes?.[3] ?? 0
-        if (Math.hypot(aimX, aimY) > 0.28) this.aim = Phaser.Math.Clamp(Math.atan2(aimY, aimX), -Math.PI + 0.2, -0.2)
-        if (gamepad.buttons?.[0]?.pressed || gamepad.buttons?.[7]?.pressed) this.fire()
-      }
-      if (!poseSteering) {
-        const pointer = this.input.activePointer
-        const mouseTargeting = pointer?.isDown && pointer.worldX >= 0 && pointer.worldX <= W
-        desiredVelocity = mouseTargeting
-          ? Phaser.Math.Clamp((pointer.worldX - this.player.x) * BALANCE.player.mouseFollowSpeed, -BALANCE.player.moveSpeed, BALANCE.player.moveSpeed)
-          : moveInput * BALANCE.player.moveSpeed
-      }
-      const rate = desiredVelocity ? BALANCE.player.moveAcceleration : BALANCE.player.moveDeceleration
-      const velocityDelta = Phaser.Math.Clamp(desiredVelocity - this.player.velocityX, -rate * dt, rate * dt)
-      this.player.velocityX += velocityDelta
-      this.player.x += this.player.velocityX * dt
-      this.player.x = Phaser.Math.Clamp(this.player.x, 42, W - 42)
-      if (this.player.x <= 42 || this.player.x >= W - 42) this.player.velocityX = 0
-      const leanTarget = this.reducedMotion ? 0 : Phaser.Math.Clamp(this.player.velocityX / BALANCE.player.moveSpeed, -1, 1) * 0.055
-      this.nodeLean = Phaser.Math.Linear(this.nodeLean || 0, leanTarget, 1 - Math.exp(-9 * dt))
-      this.recoil = Math.max(0, (this.recoil || 0) - delta * 0.035)
-      this.actor?.setPosition(this.player.x, this.player.y + (this.recoil || 0))
-      this.actor?.setRotation(this.aim + Math.PI / 2 + this.nodeLean)
-      if (!this.reducedMotion && this.actor && this.invulnMs > 0) this.actor.setAlpha(Math.floor(this.invulnMs / 90) % 2 ? 0.35 : 1)
-      else this.actor?.setAlpha(1)
-      this.drawAimPrediction()
-      if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.selectBall(this.equippedBalls[0])
-      if (Phaser.Input.Keyboard.JustDown(this.keys.TWO) && this.equippedBalls[1]) this.selectBall(this.equippedBalls[1])
-      if (this.keys.SPACE.isDown) this.fire()
-      if (this.spawned < this.waveTotal) {
-        this.spawnTimer -= dt
-        if (this.spawnTimer <= 0) { this.spawnBlock(); this.spawnTimer = BALANCE.waves[this.wave].spawnInterval }
-      }
-      this.updateBoss(delta, dt)
-      if (this.mode !== 'playing') return
-      const queuedBlocks = this.blocks.length
-      if (!this.congested && queuedBlocks >= 5) { this.congested = true; this.updateMusicForWave(); this.showToast('BUFFER LLENO · CONGESTIÓN') ; this.updateHud() }
-      else if (this.congested && queuedBlocks <= 2) { this.congested = false; this.updateMusicForWave(); this.showToast('BUFFER ESTABLE · FLUJO NORMAL'); this.updateHud() }
-      for (let blockIndex = this.blocks.length - 1; blockIndex >= 0; blockIndex--) {
-        const block = this.blocks[blockIndex]
-        if (!block.alive) continue
-        if (block.hitError || (block.boss && block.entering)) continue
-        block.disruptedMs = Math.max(0, (block.disruptedMs || 0) - delta)
-        const disrupted = block.disruptedMs > 0
-        block.y += block.speed * (this.congested ? BALANCE.buffer.speedMultiplier : 1) * (disrupted ? 0.58 : 1) * dt
-        if (block.zigzag) block.x = Phaser.Math.Clamp(block.originX + Math.sin(time * 0.0022 + block.zigzagPhase) * 68, 55, W - 55)
-        const bob = this.reducedMotion ? 0 : Math.sin(time * 0.0032 + (block.seed ?? (block.seed = Math.random() * 6.28))) * 2.1
-        const pulse = this.reducedMotion ? 1 : 1 + Math.sin(time * 0.0044 + block.seed) * 0.012
-        const phasePulse = block.boss && block.phaseTransitionMs > 0 && !this.reducedMotion ? 1 + Math.sin(time * 0.026) * 0.045 : 1
-        const crcGlitch = disrupted && !this.reducedMotion ? Math.sin(time * 0.036 + block.seed) * 2.6 : 0
-        block.container.setPosition(block.x + crcGlitch, block.y + bob).setScale(pulse * phasePulse)
-        block.impactFlashMs = Math.max(0, (block.impactFlashMs || 0) - delta)
-        if (block.glowFx) {
-          block.glowFx.color = block.impactFlashMs > 0 ? (block.impactColor ?? COLORS.cyan) : disrupted ? 0x68c9ff : (block.corrupted || block.boss ? COLORS.red : COLORS.cyan)
-          block.glowFx.outerStrength = block.impactFlashMs > 0 ? 5.2 : block.boss ? 3.4 : block.corrupted ? 2.7 : 1.3
-        }
-        if (block.y >= H - 68 && !block.boss) {
-          if (block.corrupted) {
-            this.breakCombo()
-            const lifeLost = this.loseLife()
-            this.recordMetric('lost')
-            this.emitBurst(block.x, H - 69, COLORS.red)
-            if (lifeLost) this.triggerDamageFeedback()
-          }
-          this.removeBlock(block)
-          if (this.lives <= 0) { this.finishRun(false); return }
-        } else if (block.boss && block.y > 200) block.y = 200
-      }
-      for (let shotIndex = this.shots.length - 1; shotIndex >= 0; shotIndex--) {
-        const shot = this.shots[shotIndex]
-        if (!shot.alive) continue
-        shot.x += shot.vx * dt; shot.y += shot.vy * dt
-        shot.trailTimer = (shot.trailTimer || 0) + delta
-        if (shot.trailTimer >= 32) { this.emitProjectileTrail(shot); shot.trailTimer = 0 }
-        if (shot.type === 'crc' && (shot.x < 10 || shot.x > W - 10)) { shot.x = Phaser.Math.Clamp(shot.x, 10, W - 10); this.bounceShot(shot, 'x'); if (!shot.alive) continue }
-        if (shot.type === 'crc' && shot.y < 12) { shot.y = 12; this.bounceShot(shot, 'y'); if (!shot.alive) continue }
-        if (shot.bounces >= 3 || shot.y < 0 || shot.y > H) { this.destroyShot(shot); continue }
-        shot.dot.setPosition(shot.x, shot.y); shot.aura.setPosition(shot.x, shot.y); shot.sprite?.setPosition(shot.x, shot.y)
-        for (let blockIndex = this.blocks.length - 1; blockIndex >= 0; blockIndex--) {
-          const block = this.blocks[blockIndex]
-          if (block.alive && collisionOverlapsAabb(shot.x, shot.y, shot.radius, block)) { this.hitBlock(shot, block); if (this.mode !== 'playing') return; if (!shot.alive) break }
-        }
-      }
-      if (this.spawned >= this.waveTotal && this.blocks.length === 0) this.completeWave()
+      if (this.runtimeFailure || (this.sys?.isActive && !this.sys.isActive())) return
+      try { updateGameplay.call(this, time, delta, { Phaser, W, H, BALANCE }) }
+      catch (error) { this.handleRuntimeFailure(error, 'updateGameplay') }
     }
 
     drawAimPrediction() {
@@ -1736,8 +1699,7 @@ if (!window.Phaser) {
     selectBall(type) {
       if (!type || !this.equippedBalls.includes(type)) return
       this.selectedBall = type
-      const names = { parity: 'PARIDAD', crc: 'CRC', hamming: 'HAMMING' }
-      document.querySelector('#method-summary-status').textContent = names[type] || type.toUpperCase()
+      document.querySelector('#method-summary-status').textContent = evolvedMethodLabel(type, fusionLevel(type, this.upgrades))
     }
 
     completeWave() {
@@ -1746,7 +1708,7 @@ if (!window.Phaser) {
     }
 
     completeWaveAfterFade() {
-      if (this.wave >= 5) {
+      if (isFinalWave(this.wave)) {
         this.slowMotionMs = 420
         if (this.screenShakeEnabled && !this.reducedMotion) this.cameras.main.shake(240, 0.003)
         if (!this.reducedMotion) this.cameras.main.flash(260, 24, 230, 225, false)
@@ -1767,14 +1729,9 @@ if (!window.Phaser) {
       this.bossAttackGraphics?.setVisible(false)
       this.aimGraphics?.clear().setVisible(false)
       this.actor?.setAlpha(0.46)
-      const eligible = BALANCE.upgrades.filter((upgrade) => {
-        if (upgrade.key === 'pierce' && !this.equippedBalls.includes('crc')) return false
-        if (upgrade.key === 'hammingArea' && !this.equippedBalls.includes('hamming')) return false
-        return true
-      })
-      const choices = Phaser.Utils.Array.Shuffle([...eligible]).slice(0, 3)
-      const iconByKey = { rapid: '»', multi: '×', shield: '⬡', pierce: '↠', hammingArea: '✳', bigBall: '●', slowBlocks: '◷', scoreMagnet: '✦', extraLife: '♥' }
-      upgradePanel.innerHTML = `<header class="upgrade-heading"><span>OLEADA ${this.wave} COMPLETADA</span><h2>Elige una mejora</h2></header><div class="upgrade-cards">${choices.map((choice, index) => `<button class="upgrade-card rarity-${choice.rarity === 'épica' ? 'epic' : choice.rarity === 'rara' ? 'rare' : 'common'}" data-upgrade-index="${index}" aria-label="Opción ${index + 1}: ${choice.name}, ${choice.rarity}"><span class="upgrade-key">${index + 1}</span><span class="upgrade-icon-circle"><span class="upgrade-icon">${iconByKey[choice.key] || '✦'}</span></span><strong class="upgrade-name">${choice.name}</strong><span class="upgrade-description">${choice.desc}</span><span class="upgrade-footer"><b class="upgrade-rarity">${choice.rarity.toUpperCase()}</b><small class="upgrade-synergy">${choice.synergy}</small></span></button>`).join('')}</div><p class="upgrade-hint">LEVANTA LA MANO IZQUIERDA / DERECHA / AMBAS <span>·</span> O PULSA <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></p>`
+      const eligible = eligibleUpgrades(BALANCE.upgrades, this.equippedBalls, this.upgrades)
+      const choices = Phaser.Utils.Array.Shuffle([...eligible]).slice(0, UI.upgrades.choicesPerScreen)
+      renderUpgradeChoices(upgradePanel, choices, this.wave)
       upgradePanel.hidden = false
       focusPanel(upgradePanel, '[data-upgrade-index]')
       upgradePanel.querySelectorAll('[data-upgrade-index]').forEach((button) => button.addEventListener('click', () => this.chooseUpgrade(Number(button.dataset.upgradeIndex))))
@@ -1793,6 +1750,14 @@ if (!window.Phaser) {
       if (this.screenShakeEnabled && !this.reducedMotion) this.cameras.main.shake(120, 0.0015)
       if (!this.reducedMotion) this.tweens.add({ targets: this.cameras.main, zoom: 1.015, duration: 160, yoyo: true, onComplete: () => { this.cameras.main.zoom = 1 } })
       this.upgrades[choice.key]++
+      const fusionMethod = fusionMethodForUpgrade(choice.key)
+      if (fusionMethod) {
+        const label = evolvedMethodLabel(fusionMethod, this.upgrades[choice.key])
+        if (this.selectedBall === fusionMethod) document.querySelector('#method-summary-status').textContent = label
+        this.showToast(`FUSIÓN COMPLETADA · ${label}`)
+        this.emitBurst(this.player.x, this.player.y - 24, TYPE[fusionMethod].color)
+        this.floatingText(this.player.x, this.player.y - 50, label, '#eaf8ff')
+      }
       if (choice.key === 'hammingArea') this.showHammingRing(this.player?.x ?? W / 2, this.player?.y ?? H / 2, 105 + this.upgrades.hammingArea * 35)
       upgradePanel.hidden = true; upgradePanel.innerHTML = ''; this.upgradeSpecs = null
       this.actor?.setAlpha(1)
@@ -1809,19 +1774,51 @@ if (!window.Phaser) {
       this.fadeTransition(() => {
         this.mode = 'paused'
         pausePanel.querySelector('[data-pause-action="calibrate"]').disabled = !window.poseControl?.active
-        pausePanel.hidden = false
+        setPausePanelVisible(pausePanel, true)
         focusPanel(pausePanel, '[data-pause-action="resume"]')
       })
     }
 
-    resume() { this.fadeTransition(() => { pausePanel.hidden = true; this.mode = 'playing'; focusGameCanvas() }) }
+    resume() { this.fadeTransition(() => { setPausePanelVisible(pausePanel, false); this.mode = 'playing'; focusGameCanvas() }) }
+
+    clearRunObjects() {
+      for (const block of [...(this.blocks || [])]) {
+        this.tweens.killTweensOf(block.container)
+        block.bits.forEach((bit) => this.tweens.killTweensOf(bit))
+        block.alive = false
+        block.container.setActive(false).setVisible(false).setAlpha(1).setScale(1)
+        block.sprite?.anims?.stop?.()
+        if (block.glowFx) block.glowFx.outerStrength = 0
+        this.blockPool.release(block)
+      }
+      this.blocks = []
+      this.boss = null
+      for (const shot of [...(this.shots || [])]) this.destroyShot(shot)
+      for (const particle of this.activeParticles || []) {
+        particle.setActive(false).setVisible(false).setAlpha(1).setScale(1).setRotation(0)
+        this.particlePool.release(particle)
+      }
+      this.activeParticles?.clear()
+      for (const bit of this.activeBitParticles || []) {
+        bit.setActive(false).setVisible(false).setAlpha(1).setScale(1).setRotation(0)
+        this.bitParticlePool.release(bit)
+      }
+      this.activeBitParticles?.clear()
+      for (const pulse of this.activeDistortionPulses || []) {
+        this.tweens.killTweensOf(pulse)
+        pulse.setActive(false).setVisible(false).setScale(1).setAlpha(1)
+        this.distortionPulsePool.release(pulse)
+      }
+      this.activeDistortionPulses?.clear()
+      for (const powerUp of [...(this.powerUps || [])]) this.releasePowerUp(powerUp)
+    }
 
     returnToMenu() {
       if (this.transitioning) return
       this.fadeTransition(() => {
         pausePanel.hidden = true; tutorialPanel.hidden = true; this.mode = 'title'; document.querySelector('.shell').classList.remove('in-run')
+        this.clearRunObjects()
         this.actor?.destroy(); this.hud?.destroy(); this.aimGraphics?.destroy(); this.bossHud?.destroy(); this.bossAttackGraphics?.destroy()
-        this.blocks?.forEach((block) => block.container.destroy()); this.shots?.forEach((shot) => { shot.dot?.destroy(); shot.aura?.destroy(); shot.sprite?.destroy() })
         this.blocks = []; this.shots = []; this.boss = null; this.clearResults(); this.renderTitle(); mainMenu.hidden = false; loadoutPanel.classList.add('is-hidden'); focusPanel(mainMenu, '[data-menu-action="play"]')
       })
     }
@@ -1850,16 +1847,18 @@ if (!window.Phaser) {
       const detected = Math.min(this.metrics.detected, corruptGenerated)
       const detectedRate = corruptGenerated ? Number((detected / corruptGenerated * 100).toFixed(2)) : 0
       const durationSeconds = Math.max(0, Math.round((performance.now() - this.runStartedAt) / 1000))
-      const duration = `${Math.floor(durationSeconds / 60)}:${String(durationSeconds % 60).padStart(2, '0')}`
+      const duration = formatRunDuration(durationSeconds)
       const hasHamming = this.equippedBalls.includes('hamming')
-      this.resultSummary = { initials: '', score: this.score, wave: this.wave, durationSeconds, won, equippedBalls: [...this.equippedBalls], metrics: { ...this.metrics, detected }, detected, corrected: this.metrics.corrected, lost: this.metrics.lost, detectedRate, correctionRate: hasHamming ? Number(correctionRate.toFixed(2)) : null, bitErrors: berData.bitErrors, framesGenerated: berData.framesGenerated, bitsPerFrame: berData.bitsPerFrame, totalBits: berData.totalBits, ber: berData.ber, waveMetrics: this.waveMetrics.map((entry) => ({ ...entry, detected: Math.min(entry.detected, entry.corruptCreated) })), date: new Date().toISOString() }
+      this.resultSummary = { initials: '', score: this.score, wave: this.wave, durationSeconds, won, equippedBalls: [...this.equippedBalls], metrics: { ...this.metrics, detected }, detected, corrected: this.metrics.corrected, lost: this.metrics.lost, detectedRate, correctionRate: hasHamming ? Number(correctionRate.toFixed(2)) : null, bitErrors: berData.bitErrors, residualBitErrors: berData.residualBitErrors, framesGenerated: berData.framesGenerated, bitsPerFrame: berData.bitsPerFrame, totalBits: berData.totalBits, ber: berData.ber, residualBer: berData.residualBer, waveMetrics: this.waveMetrics.map((entry) => ({ ...entry, detected: Math.min(entry.detected, entry.corruptCreated) })), date: new Date().toISOString() }
       const chart = this.waveMetrics.map((entry) => {
         const generated = Math.max(0, entry.created || 0)
         const corrupt = Math.max(0, entry.corruptCreated || 0)
         const detectedInWave = Math.min(Math.max(0, entry.detected || 0), corrupt)
         const correctedInWave = Math.min(Math.max(0, entry.corrected || 0), corrupt)
+        const residualInWave = Math.min(Math.max(0, entry.lost || 0), corrupt)
         const rates = [
-          { label: 'BER', value: generated ? corrupt / (generated * 8) * 100 : 0, count: `${corrupt}/${generated * 8}`, color: '#ffcb57', title: 'Bits corruptos / bits generados' },
+          { label: 'BER BRUTO', value: generated ? corrupt / (generated * 8) * 100 : 0, count: `${corrupt}/${generated * 8}`, color: '#ffcb57', title: 'Bits erróneos generados / bits transmitidos' },
+          { label: 'BER RESIDUAL', value: generated ? residualInWave / (generated * 8) * 100 : 0, count: `${residualInWave}/${generated * 8}`, color: '#ff416d', title: 'Bits erróneos de tramas perdidas / bits transmitidos' },
           { label: 'DETECCIÓN', value: corrupt ? detectedInWave / corrupt * 100 : 0, count: `${detectedInWave}/${corrupt}`, color: '#18e6e1', title: 'Corruptas detectadas / corruptas generadas' },
           { label: 'CORRECCIÓN', value: hasHamming && corrupt ? correctedInWave / corrupt * 100 : null, count: hasHamming ? `${correctedInWave}/${corrupt}` : 'n/a', color: '#6bff9f', title: 'Corruptas corregidas / corruptas generadas' },
         ]
@@ -1872,15 +1871,16 @@ if (!window.Phaser) {
           <article><small>DETECTADAS</small><b>${detected} / ${corruptGenerated}</b><span>Corruptas destruidas / corruptas generadas.</span></article>
           <article><small>PERDIDAS</small><b>${this.metrics.lost}</b><span>Corruptas que alcanzaron el nodo.</span></article>
           <article><small>% DETECTADO</small><b>${detectedRate.toFixed(2)}%</b><span>Detectadas ÷ ${corruptGenerated} corruptas generadas.</span></article>
-          <article><small>% CORREGIDO</small><b>${hasHamming ? `${correctionRate.toFixed(2)}%` : 'n/a (sin Hamming)'}</b><span>${hasHamming ? 'Errores corregidos ÷ errores generados.' : 'Hamming no estaba equipado.'}</span></article>
-          <article><small>BER</small><b>${berData.ber.toFixed(2)}%</b><span>${berData.framesGenerated} tramas × ${berData.bitsPerFrame} bits = ${berData.totalBits} bits generados.</span></article>
+          <article><small>% CORREGIDO</small><b>${hasHamming ? `${correctionRate.toFixed(2)}%` : 'n/a (sin Hamming)'}</b><span>${hasHamming ? 'Bits corregidos por Hamming ÷ bits erróneos generados.' : 'Hamming no estaba equipado.'}</span></article>
+          <article><small>BER BRUTO</small><b>${berData.ber.toFixed(2)}%</b><span>${berData.bitErrors} bits erróneos generados ÷ ${berData.totalBits} bits transmitidos.</span></article>
+          <article><small>BER RESIDUAL</small><b>${berData.residualBer.toFixed(2)}%</b><span>${berData.residualBitErrors} bits erróneos perdidos ÷ ${berData.totalBits} bits transmitidos.</span></article>
           <article><small>DISPAROS A SANAS</small><b>${this.metrics.misfires}</b><span>Impactos en tramas íntegras.</span></article>
         </section>
         <section class="results-grid">
           <article class="wave-results"><h3>RENDIMIENTO POR OLEADA</h3><div class="wave-chart">${chart}</div></article>
-          <article class="link-results"><h3>CAPA DE ENLACE</h3><p><b>Paridad:</b> detecta errores en una cantidad impar de bits.</p><p><b>CRC:</b> detecta alteraciones mediante un código polinómico.</p><p><b>Hamming:</b> localiza y corrige errores de un bit.</p><p class="metrics-note">BER = ${berData.bitErrors} bits erróneos ÷ (${berData.framesGenerated} tramas × ${berData.bitsPerFrame} bits) = ${berData.bitErrors} ÷ ${berData.totalBits} = ${berData.ber.toFixed(2)}%.</p></article>
+          <article class="link-results"><h3>CAPA DE ENLACE</h3><p><b>Paridad y CRC</b> detectan y destruyen tramas corruptas; <b>Hamming</b> corrige el bit y conserva la trama.</p><p><b>BER bruto</b> = bits erróneos generados / bits transmitidos = ${berData.bitErrors} / (${berData.framesGenerated} × ${berData.bitsPerFrame}) = ${berData.ber.toFixed(2)}%.</p><p><b>BER residual</b> = bits erróneos de tramas perdidas sin detectar / bits transmitidos = ${berData.residualBitErrors} / ${berData.totalBits} = ${berData.residualBer.toFixed(2)}%.</p></article>
         </section>
-        <section class="results-save-area"><label class="score-entry">INICIALES <input id="result-initials" maxlength="3" placeholder="ABC" aria-label="Iniciales para guardar el puntaje"><button id="save-score" disabled>GUARDAR</button><button id="export-result">EXPORTAR JSON</button><span id="save-confirmation" role="status" aria-live="polite"></span></label><div class="leaderboard"><h3>MEJORES PUNTAJES</h3><div id="results-leaderboard">${renderLeaderboard(3)}</div></div></section>
+        <section class="results-save-area"><label class="score-entry">INICIALES <input id="result-initials" maxlength="5" pattern="[A-Za-z0-9]{1,5}" placeholder="ABC" aria-label="Iniciales para guardar el puntaje"><button id="save-score" disabled>GUARDAR</button><button id="export-result">EXPORTAR JSON</button><span id="save-confirmation" role="status" aria-live="polite"></span></label><div class="leaderboard"><h3>MEJORES PUNTAJES</h3><div id="results-leaderboard">${renderLeaderboard(3)}</div></div></section>
         <footer class="results-actions"><button id="results-menu">MENÚ</button><button id="results-retry">NUEVA PARTIDA</button></footer>`
       resultsPanel.classList.remove('is-animated')
       resultsPanel.hidden = false
@@ -1893,13 +1893,17 @@ if (!window.Phaser) {
 
     saveToStorage() {
       try {
-        const scores = JSON.parse(localStorage.getItem('tramas-y-bloques-scores') || '[]')
+        const scores = readValidatedStorage(localStorage, 'tramas-y-bloques-scores', validateScores, [])
+        const validResult = validateRunSummary(this.resultSummary)
+        if (!validResult?.initials) return false
         const existing = scores.findIndex((entry) => entry.date === this.resultSummary.date)
-        if (existing >= 0) scores[existing] = this.resultSummary
-        else scores.unshift(this.resultSummary)
+        if (existing >= 0) scores[existing] = validResult
+        else scores.unshift(validResult)
         scores.sort((a, b) => b.score - a.score)
-        localStorage.setItem('tramas-y-bloques-scores', JSON.stringify(scores.slice(0, 20), null, 2))
+        localStorage.setItem('tramas-y-bloques-scores', JSON.stringify(validateScores(scores), null, 2))
+        return true
       } catch (error) { console.warn('No fue posible guardar el resultado localmente.', error) }
+      return false
     }
 
     clearResults() {
@@ -1911,10 +1915,14 @@ if (!window.Phaser) {
       if (!this.resultSummary) return
       const saveButton = document.querySelector('#save-score')
       if (!exportJson && saveButton?.disabled) return
-      this.resultSummary.initials = (document.querySelector('#result-initials')?.value || '---').toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 3) || '---'
-      this.saveToStorage()
+      this.resultSummary.initials = (document.querySelector('#result-initials')?.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)
+      const validResult = validateRunSummary(this.resultSummary)
+      if (!validResult) return
+      this.resultSummary = validResult
+      const saved = this.saveToStorage()
       document.querySelector('#results-leaderboard').innerHTML = renderLeaderboard(3)
       if (!exportJson) {
+        if (!saved) { document.querySelector('#save-confirmation').textContent = 'No se pudo guardar en este navegador'; return }
         saveButton.textContent = 'PUNTAJE GUARDADO'
         saveButton.disabled = true
         document.querySelector('#result-initials').disabled = true
@@ -1922,13 +1930,14 @@ if (!window.Phaser) {
         focusPanel(resultsPanel, '#results-menu')
       }
       if (!exportJson) return
-      const blob = new Blob([JSON.stringify(this.resultSummary, null, 2)], { type: 'application/json' })
+      const blob = new Blob([JSON.stringify(validateRunSummary(this.resultSummary), null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a'); link.href = url; link.download = `tramas-${this.resultSummary.initials}-${this.score}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
       document.querySelector('#export-result').textContent = 'JSON DESCARGADO'
     }
   }
 
+  optionalSpritesAvailable = await probeOptionalSprites(import.meta.env.BASE_URL)
   const game = new Phaser.Game(createGameConfig(Phaser, FlowScene, W, H))
   window.gameInstance = game
   game.events.once('ready', () => { game.sound.volume = accessibility.volume / 100; game.sound.mute = accessibility.muted; currentScene?.syncFallbackAudioVolume(); currentScene?.updateAudioStatus() })
@@ -2019,7 +2028,7 @@ if (!window.Phaser) {
         if (state.ready) state.stop(`Falló MediaPipe: ${detail.slice(0, 100)}`)
         else rejectReady(new Error(detail))
       }
-      worker.postMessage({ type: 'init', bundleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.cjs', wasmUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm', poseModelUrl: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task', handModelUrl: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' })
+      worker.postMessage({ type: 'init', localBundleUrl: `${import.meta.env.BASE_URL}vendor/mediapipe/vision_bundle.cjs`, bundleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.cjs', localWasmUrl: `${import.meta.env.BASE_URL}vendor/mediapipe/wasm/`, wasmUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm/', localPoseModelUrl: `${import.meta.env.BASE_URL}vendor/mediapipe/models/pose_landmarker_lite.task`, poseModelUrl: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task', localHandModelUrl: `${import.meta.env.BASE_URL}vendor/mediapipe/models/hand_landmarker.task`, handModelUrl: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' })
       await ready
       state.ready = true
       cameraButton.disabled = false; cameraButton.innerHTML = '<span>◉</span> DESACTIVAR CÁMARA'; recalibrateButton.disabled = false

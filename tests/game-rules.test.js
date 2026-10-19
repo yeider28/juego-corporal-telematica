@@ -19,8 +19,8 @@ test('la puntuación conserva premios por método y multiplicador y no baja de c
   assert.equal(penalizeScore(100, 25), 75)
 })
 
-test('la oleada termina al generar el total y retirar todos los bloques vivos', () => {
-  assert.equal(isWaveComplete({ spawned: 3, total: 3, blocks: [{ alive: false }] }), true)
+test('la oleada termina al generar el total y vaciar el arreglo activo de bloques', () => {
+  assert.equal(isWaveComplete({ spawned: 3, total: 3, blocks: [{ alive: false }] }), false)
   assert.equal(isWaveComplete({ spawned: 2, total: 3, blocks: [{ alive: false }] }), false)
   assert.equal(isWaveComplete({ spawned: 3, total: 3, blocks: [{ alive: true }] }), false)
   assert.equal(isFinalWave(4), false)

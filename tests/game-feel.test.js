@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { BALANCE } from '../src/config/balance.js'
 import { eligibleUpgrades } from '../src/escenas/mejoras.js'
+import { evolvedMethodLabel } from '../src/escenas/mejoras.js'
+import { fusedProjectileStats } from '../src/sistemas/fusion.js'
 
 function simulateBlindFire(difficultyKey) {
   const difficulty = BALANCE.difficulty[difficultyKey]
@@ -52,4 +54,7 @@ test('la fusión se ofrece tras obtener multibola, solo para métodos equipados 
   assert.equal(eligibleUpgrades(fusions, ['parity', 'hamming'], { multi: 0 }).length, 0)
   assert.deepEqual(eligibleUpgrades(fusions, ['parity', 'hamming'], { multi: 1 }).map((upgrade) => upgrade.key), ['fusionParity', 'fusionHamming'])
   assert.deepEqual(eligibleUpgrades(fusions, ['parity', 'hamming'], { multi: 1, fusionParity: 2 }).map((upgrade) => upgrade.key), ['fusionHamming'])
+  assert.equal(evolvedMethodLabel('parity', 1), 'PARIDAD+')
+  assert.equal(evolvedMethodLabel('parity', 2), 'PARIDAD++')
+  assert.deepEqual(fusedProjectileStats('parity', 6, { fusionParity: 2 }), { level: 2, radius: 10, damage: 3 })
 })

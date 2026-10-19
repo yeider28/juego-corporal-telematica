@@ -6,7 +6,7 @@ Juego arcade 2D de cinco oleadas sobre integridad de tramas. Destruye las tramas
 
 - Node.js 22.12+ o 24.x.
 - Chrome o Edge moderno. La cámara requiere `localhost` o HTTPS.
-- Phaser 3.87.0 y MediaPipe Tasks Vision 0.10.14 se cargan desde jsDelivr con SRI SHA-384.
+- Phaser 3.87.0 y MediaPipe Tasks Vision 0.10.14.
 
 ```sh
 npm install
@@ -31,7 +31,7 @@ Antes de cada partida, elige uno o dos métodos (Paridad, CRC o Hamming), una ve
 
 Las tramas aparecen con el intervalo de la oleada y descienden continuamente. La oleada termina cuando se generó su cantidad configurada y ya no quedan tramas vivas. Una trama corrupta que llega al nodo se cuenta como perdida; una trama sana que llega no causa penalización. Entre oleadas se detiene el juego para elegir una mejora.
 
-Paridad y CRC detectan una trama corrupta y la destruyen. Hamming corrige el bit erróneo y conserva la trama. Tras obtener **Doble paquete**, las mejoras de fusión combinan bolas del mismo método hasta la evolución `++`. Caen dos power-ups: escudo de red (12 s) y ralentización (9 s); el HUD indica su duración.
+Paridad y CRC detectan una trama corrupta y la destruyen. Hamming corrige el bit erróneo y conserva la trama. Tras obtener **Doble paquete**, pueden aparecer fusiones del método equipado: cada nivel evoluciona visualmente la bola a `+` y `++`, aumenta su radio y daño al jefe, y muestra una animación y aviso. Las tramas corruptas destruidas pueden soltar uno de dos power-ups: escudo de red (12 s) o ralentización (9 s); ambos caen, se recogen al tocar el nodo y muestran icono y duración en el HUD.
 
 El jefe aparece en la quinta oleada, tiene tres fases y anuncia ataques que se pueden esquivar. El disparo continuo se permite, pero acumula calor y eleva el enfriamiento. Los impactos en tramas sanas penalizan puntos o vidas y rompen la racha.
 
@@ -48,17 +48,19 @@ Los efectos y la música están en `public/assets/sonidos/`. Phaser/Web Audio se
 La pantalla de resultados muestra métricas por oleada y distingue:
 
 - **% detectado** = tramas corruptas detectadas y destruidas ÷ tramas corruptas generadas.
-- **% corregido** = bits corregidos por Hamming ÷ bits erróneos generados.
+- **% corregido** = bits corregidos por Hamming ÷ bits erróneos generados; se muestra `n/a (sin Hamming)` si no se equipó ese método.
 - **BER bruto** = bits erróneos generados ÷ bits transmitidos.
-- **BER residual** = bits erróneos de tramas que llegaron al nodo sin detectar ÷ bits transmitidos.
+- **BER residual** = bits erróneos de tramas corruptas perdidas al llegar al nodo sin detectar ÷ bits transmitidos. Cada trama corrupta aporta un bit erróneo.
 
-Cada trama transmite 8 bits, así que `bits transmitidos = tramas generadas × 8`. El resultado explica las fórmulas y que detección/destrucción y corrección son acciones distintas.
+Cada trama transmite 8 bits, así que `bits transmitidos = tramas generadas × 8` para ambas fórmulas. Paridad y CRC detectan y destruyen tramas; Hamming corrige el bit y conserva la trama. Por eso `% detectado` cuenta tramas destruidas y `% corregido` cuenta bits reparados.
 
-Los puntajes se guardan en `localStorage` al introducir entre 3 y 5 caracteres alfanuméricos. Puntajes, ajustes y estadísticas de gestos se validan y limitan al leerlos; datos corruptos se descartan. La exportación descarga un resumen JSON construido con datos validados. Los puntajes solo pertenecen a este navegador.
+Los puntajes se guardan en `localStorage` al introducir hasta cinco caracteres alfanuméricos. Puntajes, ajustes y estadísticas de gestos se validan y limitan al leerlos; datos corruptos se descartan. La exportación descarga un resumen JSON construido con datos validados. Los puntajes solo pertenecen a este navegador.
 
 ## Código y recursos
 
 `src/main.js` conecta los módulos. La configuración vive en `src/config/`, las reglas y sistemas en `src/sistemas/`, y Menú, Loadout, Juego, Mejoras, Pausa y Resultados en `src/escenas/`. Cámara, gestos, entidades y UI tienen sus propios módulos.
+
+El juego usa un lienzo lógico de 960×540 escalado con `Phaser.Scale.FIT`. Phaser 3.87.0 se obtiene del CDN jsDelivr con SRI SHA-384 y es necesario para arrancar. MediaPipe 0.10.14 carga primero desde `public/vendor/mediapipe/`; si faltan archivos, usa el CDN fijado por versión y los modelos de Google. El LEEME de esa carpeta enumera los archivos para autoalojarlo.
 
 Los diez sprites definidos en `src/sistemas/sprites.js` son opcionales y se buscan en `public/assets/sprites/`. Se cargan solo si existen; si faltan, Phaser dibuja las formas de respaldo. El favicon está en `public/favicon.svg`.
 
@@ -67,10 +69,10 @@ Los pools de la escena se precalientan al arrancar y tienen límites fijos: 64 t
 ## Limitaciones conocidas
 
 - No se incluyen los sprites del plan; actualmente se usan las formas de Phaser.
-- El arranque de Phaser y la función de cámara dependen de recursos CDN. SRI comprueba integridad, pero no aporta modo sin conexión.
-- La cámara requiere una cámara funcional, permisos y descarga de MediaPipe/modelos. La simulación automática no sustituye una prueba física de cámara o gamepad.
-- Los 30 FPS son un límite objetivo de muestreo; la velocidad real de inferencia depende del procesador y del navegador. La inferencia corre en un Web Worker para no bloquear el renderizado de Phaser.
-- El rendimiento depende del navegador, el hardware y el uso de cámara.
+- Phaser requiere conexión al CDN; la etiqueta verifica SRI SHA-384. No se incluye una copia local de Phaser.
+- No se incluyen bundle, WASM ni modelos locales de MediaPipe. Sin copiarlos a `public/vendor/mediapipe/`, la cámara necesita acceso a los CDN.
+- La cámara requiere permisos y un dispositivo compatible. La simulación automática no sustituye las pruebas físicas de cámara y gamepad.
+- 30 FPS es el máximo de muestreo de inferencia; el rendimiento real depende del equipo y del navegador. MediaPipe corre en un Web Worker.
 
 ## Checklist de prueba manual
 
@@ -81,7 +83,7 @@ Los pools de la escena se precalientan al arrancar y tienen límites fijos: 64 t
 - [ ] **Tres dificultades:** completar o perder una partida en Fácil, Normal y Difícil; revisar las vidas iniciales y que la partida llega a resultados.
 - [ ] **Jefe:** alcanzar la quinta oleada; comprobar fases, avisos, ataques y daño.
 - [ ] **Resultados:** revisar puntaje, duración, métricas por oleada, % detectado, % corregido, BER bruto y BER residual.
-- [ ] **Exportación JSON:** guardar un puntaje con iniciales alfanuméricas de 3–5 caracteres y exportar; abrir el archivo y comprobar que contiene el resumen y las métricas.
+- [ ] **Exportación JSON:** guardar un puntaje con iniciales alfanuméricas de hasta cinco caracteres y exportarlo; abrir el archivo y comprobar el resumen y las métricas.
 - [ ] **Persistencia:** recargar la página y verificar puntajes y opciones; probar con datos corruptos en `localStorage` y confirmar que el juego arranca.
 
 ## Verificación automatizada

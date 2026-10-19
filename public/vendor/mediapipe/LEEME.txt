@@ -1,0 +1,11 @@
+Copia local opcional de MediaPipe Tasks Vision 0.10.14
+
+Para que la cámara funcione sin acceder a CDN, coloca estos archivos aquí:
+
+- vision_bundle.cjs
+- wasm/ (contenido del directorio wasm de @mediapipe/tasks-vision 0.10.14)
+- models/pose_landmarker_lite.task
+- models/hand_landmarker.task
+
+El juego intenta usar primero estos recursos locales. Si falta alguno, intenta
+el recurso CDN correspondiente. No se incluyen binarios en este repositorio.

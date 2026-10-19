@@ -27,6 +27,18 @@ test('lectura local no propaga JSON corrupto ni fallos de almacenamiento', () =>
   assert.deepEqual(readValidatedStorage({ getItem: () => { throw Error() } }, 'x', validateScores, []), [])
 })
 
+test('estadísticas corruptas de gestos se descartan y la exportación se limita', () => {
+  const fallback = validateGestureTrials(null)
+  assert.deepEqual(readValidatedStorage({ getItem: () => '{invalid' }, 'gestures', validateGestureTrials, fallback), fallback)
+  const sanitized = validateGestureTrials({ move: { success: 4.8, failure: 30, falsePositive: -3 }, aim: { success: 'NaN' } })
+  assert.deepEqual(sanitized.move, { label: 'MOVERSE', success: 4, failure: 16, falsePositive: 0 })
+  assert.equal(sanitized.aim.success, 0)
+})
+
+test('iniciales exportables contienen solo cinco caracteres alfanuméricos', () => {
+  assert.equal(validateRunSummary({ initials: 'ab-!123456' }).initials, 'AB123')
+})
+
 test('preferencias de accesibilidad persisten y se revalidan al recargar', () => {
   const data = new Map()
   const storage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) }

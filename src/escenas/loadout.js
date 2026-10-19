@@ -7,7 +7,7 @@ export function renderLoadoutSelection(selection, root = document) {
     button.setAttribute('aria-pressed', String(selected))
     button.disabled = selected && selection.balls.length <= UI.loadout.minimumMethods
     const status = button.querySelector('.loadout-status')
-    status.textContent = selected ? '✓ Equipado' : selection.balls.length >= UI.loadout.maxMethods ? 'Máximo 2 alcanzado · Toca para intercambiar' : 'Toca para equipar'
+    status.textContent = selected ? '✓ Equipado' : selection.balls.length >= UI.loadout.maxMethods ? `Máximo ${UI.loadout.maxMethods} alcanzado · Toca para intercambiar` : 'Toca para equipar'
   })
   root.querySelectorAll('[data-loadout-perk]').forEach((button) => {
     const selected = button.dataset.loadoutPerk === selection.perk

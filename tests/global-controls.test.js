@@ -75,6 +75,19 @@ test('registrar de nuevo el manejador global no duplica listeners y shutdown lo 
   assert.equal(listeners.size, 0)
 })
 
+test('un fallo de un atajo se reporta sin escapar del listener DOM', () => {
+  const failure = new Error('control defectuoso')
+  let reported = null
+  let prevented = false
+  const handled = dispatchGlobalKey({ code: 'KeyD', preventDefault() { prevented = true } }, {
+    toggleDebug() { throw failure },
+    onError(error, event) { reported = { error, code: event.code } },
+  })
+  assert.equal(handled, true)
+  assert.equal(prevented, true)
+  assert.deepEqual(reported, { error: failure, code: 'KeyD' })
+})
+
 test('tutorial aparece si falta la bandera o está corrupta; se oculta al completar o saltar', () => {
   const storage = memoryStorage()
   assert.equal(readTutorialSeen(storage), false)
@@ -97,6 +110,12 @@ test('leer la bandera histórica no escribe tutorialVisto', () => {
   const storage = memoryStorage({ 'tramas-tutorial-complete': 'true' })
   assert.equal(readTutorialSeen(storage), true)
   assert.equal(storage.getItem(TUTORIAL_SEEN_KEY), null)
+})
+
+test('fallos de lectura o escritura del almacenamiento no detienen el tutorial', () => {
+  const unavailable = { getItem() { throw new Error('bloqueado') }, setItem() { throw new Error('bloqueado') } }
+  assert.equal(readTutorialSeen(unavailable), false)
+  assert.equal(completeTutorial(unavailable, 'skip'), false)
 })
 
 test('restablecer elimina todas las claves del juego y conserva las de otros sitios', () => {

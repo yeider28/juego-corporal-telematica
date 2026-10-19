@@ -10,4 +10,9 @@ export const UI = Object.freeze({
   },
   resultDuration: { secondsPerMinute: 60, minutePadding: 2 },
   loadout: { maxMethods: 2, minimumMethods: 1 },
+  upgrades: {
+    choicesPerScreen: 3,
+    keyboardKeys: [1, 2, 3],
+    icons: { rapid: '»', multi: '×', shield: '⬡', pierce: '↠', hammingArea: '✳', bigBall: '●', slowBlocks: '◷', scoreMagnet: '✦', extraLife: '♥' },
+  },
 })

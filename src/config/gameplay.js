@@ -4,7 +4,13 @@ export const GAMEPLAY = Object.freeze({
   waveStart: { firstSpawnDelaySeconds: 0.5 },
   lives: { causes: ['healthy', 'boss', 'corrupt'] },
   score: { scoreFloor: 0, scoreMagnetStep: 0.12 },
-  boss: { entryTargetY: 145, entryStartY: -80, entryScale: 0.72, entryDurationMs: 1050 },
+  boss: {
+    entryTargetY: 145, entryStartY: -80, entryScale: 0.72, entryDurationMs: 1050,
+    initialAttackDelaySeconds: 2.8, phaseTransitionMs: 1450, phaseAttackPauseSeconds: 2.2,
+    attackCooldownFloorSeconds: 1.1, attackCooldownBaseSeconds: 2.8, attackCooldownPhaseStepSeconds: 0.55,
+    attackWarningMs: 980, targetVariance: 220, targetPadding: 55, twinTargetOffset: 75, twinTargetPadding: 40,
+    attackLaneWidths: { phase1: 48, phase2: 76, phase3: 58 },
+  },
   bossPhase: { secondThreshold: 2 / 3, thirdThreshold: 1 / 3 },
   spawning: { xPadding: 90, startY: -35, waveFourZigzagChance: 0.65 },
 })
